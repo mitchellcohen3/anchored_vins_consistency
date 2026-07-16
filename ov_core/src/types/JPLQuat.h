@@ -25,7 +25,15 @@
 #include "Type.h"
 #include "utils/quat_ops.h"
 
+#include "lie_utils/SO3.h"
+#include "utils/print.h"
+
 namespace ov_type {
+
+enum class AttitudeStateRepresentation {
+  Left,
+  Right,
+};
 
 /**
  * @brief Derived Type class that implements JPL quaternion
@@ -92,7 +100,8 @@ namespace ov_type {
 class JPLQuat : public Type {
 
 public:
-  JPLQuat() : Type(3) {
+  JPLQuat(AttitudeStateRepresentation attitude_state_representation = AttitudeStateRepresentation::Right)
+      : Type(3), _attitude_state_representation(attitude_state_representation) {
     Eigen::Vector4d q0 = Eigen::Vector4d::Zero();
     q0(3) = 1.0;
     set_value_internal(q0);
@@ -115,13 +124,32 @@ public:
 
     assert(dx.rows() == _size);
 
-    // Build perturbing quaternion
-    Eigen::Matrix<double, 4, 1> dq;
-    dq << .5 * dx, 1.0;
-    dq = ov_core::quatnorm(dq);
+    PRINT_DEBUG("Entered update of JPLQuat! Should not really enter here.\n");
+
+    // Do the perturbation on SO(3)
+    Eigen::Matrix3d C_ab = ov_core::quat_2_Rot(_value).transpose();
+    Eigen::Matrix3d C_ab_new;
+
+    if (_attitude_state_representation == AttitudeStateRepresentation::Left) {
+      PRINT_ERROR("Left attitude state representation not yet implemented for JPLQuat!");
+    } else if (_attitude_state_representation == AttitudeStateRepresentation::Right) {
+      C_ab_new = C_ab * ov_core::SO3::expMap(dx);
+    }
+
+    // Convert back to quaternion
+    Eigen::Matrix<double, 4, 1> q_new = ov_core::rot_2_quat(C_ab_new.transpose());
+    set_value(q_new);
+
+    // Eigen::Matrix3d C_ab_new =
+
+    // // Eigen::VectorX
+    // // Build perturbing quaternion
+    // Eigen::Matrix<double, 4, 1> dq;
+    // dq << .5 * dx, 1.0;
+    // dq = ov_core::quatnorm(dq);
 
     // Update estimate and recompute R
-    set_value(ov_core::quat_multiply(dq, _value));
+    // set_value(ov_core::quat_multiply(dq, _value));
   }
 
   /**
@@ -185,6 +213,9 @@ protected:
     // compute associated rotation
     _Rfej = ov_core::quat_2_Rot(new_value);
   }
+
+protected:
+  AttitudeStateRepresentation _attitude_state_representation = AttitudeStateRepresentation::Right;
 };
 
 } // namespace ov_type

@@ -32,7 +32,7 @@ State::State(StateOptions &options) {
 
   // Append the imu to the state and covariance
   int current_id = 0;
-  _imu = std::make_shared<IMU>();
+  _imu = std::make_shared<IMU>(options.nav_state_representation);
   _imu->set_local_id(current_id);
   _variables.push_back(_imu);
   current_id += _imu->size();
@@ -147,20 +147,29 @@ State::State(StateOptions &options) {
     }
   }
   if (_options.do_calib_camera_timeoffset) {
-    _Cov(_calib_dt_CAMtoIMU->id(), _calib_dt_CAMtoIMU->id()) = std::pow(0.01, 2);
+    double sigma_prior_dt = options.sigma_prior_timeoffset;
+    _Cov(_calib_dt_CAMtoIMU->id(), _calib_dt_CAMtoIMU->id()) = std::pow(sigma_prior_dt, 2);
   }
   if (_options.do_calib_camera_pose) {
     for (int i = 0; i < _options.num_cameras; i++) {
-      _Cov.block(_calib_IMUtoCAM.at(i)->id(), _calib_IMUtoCAM.at(i)->id(), 3, 3) = std::pow(0.005, 2) * Eigen::MatrixXd::Identity(3, 3);
+      double sigma_prior_att = options.sigma_prior_cam_pose_att;
+      double sigma_prior_r = options.sigma_prior_cam_pose_r;
+
+      _Cov.block(_calib_IMUtoCAM.at(i)->id(), _calib_IMUtoCAM.at(i)->id(), 3, 3) =
+          std::pow(sigma_prior_att, 2) * Eigen::MatrixXd::Identity(3, 3);
       _Cov.block(_calib_IMUtoCAM.at(i)->id() + 3, _calib_IMUtoCAM.at(i)->id() + 3, 3, 3) =
-          std::pow(0.015, 2) * Eigen::MatrixXd::Identity(3, 3);
+          std::pow(sigma_prior_r, 2) * Eigen::MatrixXd::Identity(3, 3);
     }
   }
   if (_options.do_calib_camera_intrinsics) {
     for (int i = 0; i < _options.num_cameras; i++) {
-      _Cov.block(_cam_intrinsics.at(i)->id(), _cam_intrinsics.at(i)->id(), 4, 4) = std::pow(1.0, 2) * Eigen::MatrixXd::Identity(4, 4);
+      double sigma_prior_int = options.sigma_prior_cam_intrinsics;
+      double sigma_prior_dist = options.sigma_prior_cam_dist;
+
+      _Cov.block(_cam_intrinsics.at(i)->id(), _cam_intrinsics.at(i)->id(), 4, 4) =
+          std::pow(sigma_prior_int, 2) * Eigen::MatrixXd::Identity(4, 4);
       _Cov.block(_cam_intrinsics.at(i)->id() + 4, _cam_intrinsics.at(i)->id() + 4, 4, 4) =
-          std::pow(0.005, 2) * Eigen::MatrixXd::Identity(4, 4);
+          std::pow(sigma_prior_dist, 2) * Eigen::MatrixXd::Identity(4, 4);
     }
   }
 }

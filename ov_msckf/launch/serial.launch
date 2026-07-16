@@ -3,16 +3,18 @@
     <!-- what config we are going to run (should match folder name) -->
     <arg name="verbosity"   default="INFO" /> <!-- ALL, DEBUG, INFO, WARNING, ERROR, SILENT -->
     <arg name="config"      default="tum_vi" /> <!-- euroc_mav, tum_vi, rpng_aruco, kaist -->
-    <arg name="config_path" default="$(find ov_msckf)/../config/$(arg config)/estimator_config.yaml" />
+    <arg name="config_path"  />
+    <arg name="bag" />
+
+    <arg name="consistency_method" /> <!-- none, fej, RI -->
+    <arg name="feat_rep" />
 
     <!-- mono or stereo and what ros bag to play -->
-    <arg name="max_cameras" default="2" />
-    <arg name="use_stereo"  default="true" />
+    <arg name="max_cameras" />
+    <arg name="use_stereo" />
+    <!-- <arg name="perform_init_covariance_propagation" /> -->
+
     <arg name="bag_start"   default="0" /> <!-- v1-2: 0, mh1: 40, mh2: 35, mh3: 17.5, mh4-5: 15 -->
-    <arg name="dataset"     default="dataset-room1_512_16" /> <!-- V1_01_easy, V1_02_medium, V1_03_difficult, V2_02_medium, dataset-room1_512_16 -->
-    <!-- <arg name="bag"         default="/media/patrick/RPNG FLASH 3/$(arg config)/$(arg dataset).bag" /> -->
-    <arg name="bag"         default="/home/patrick/datasets/$(arg config)/$(arg dataset).bag" />
-    <!-- <arg name="bag"         default="/datasets/$(arg config)/$(arg dataset).bag" /> -->
 
     <!-- saving trajectory path and timing information -->
     <arg name="dosave"      default="false" />
@@ -20,9 +22,15 @@
     <arg name="path_est"    default="/tmp/traj_estimate.txt" />
     <arg name="path_time"   default="/tmp/traj_timing.txt" />
 
+    <!-- If we should save the full state-->
+    <arg name="save_total_state" default="false" />
+    <arg name="filepath_est" default="/home/mitchell/experiments/ov_results/state_est.txt" />
+    <arg name="filepath_std" default="/home/mitchell/experiments/ov_results/state_std.txt" />
+    <arg name="filepath_gt" default="/home/mitchell/experiments/ov_results/state_gt.txt" />
+
     <!-- if we should viz the groundtruth -->
     <arg name="dolivetraj"  default="false" />
-    <arg name="path_gt"     default="$(find ov_data)/$(arg config)/$(arg dataset).txt" />
+    <!-- <arg name="path_gt"     default="$(find ov_data)/$(arg config)/$(arg dataset).txt" /> -->
 
     <!-- MASTER NODE! -->
 <!--    <node name="ov_msckf" pkg="ov_msckf" type="ros1_serial_msckf" output="screen" clear_params="true" required="true" launch-prefix="gdb -ex run &#45;&#45;args">-->
@@ -40,21 +48,34 @@
         <!-- world/filter parameters -->
         <param name="use_stereo"                type="bool"   value="$(arg use_stereo)" />
         <param name="max_cameras"               type="int"    value="$(arg max_cameras)" />
+        <param name="consistency_method"        type="string" value="$(arg consistency_method)" />
+        <param name="feat_rep_msckf"            type="string" value="$(arg feat_rep)" />
+        <param name="feat_rep_slam"             type="string" value="$(arg feat_rep)" />
+        <param name="feat_rep_aruco"            type="string" value="$(arg feat_rep)" />
+
+        <!-- <param name="perform_init_covariance_propagation" type="bool" value="$(arg perform_init_covariance_propagation)" /> -->
 
         <!-- timing statistics recording -->
         <param name="record_timing_information" type="bool"   value="$(arg dotime)" />
         <param name="record_timing_filepath"    type="str"    value="$(arg path_time)" />
 
+        <!-- Full state saving -->
+        <param name="save_total_state"          type="bool"   value="$(arg save_total_state)" />
+        <param name="filepath_est"              type="str"    value="$(arg filepath_est)" />
+        <param name="filepath_gt"               type="str"    value="$(arg filepath_gt)" />
+        <param name="filepath_std"              type="str"    value="$(arg filepath_std)" />
+        <param name="path_est"                  type="str"    value="$(arg path_est)" />
+
     </node>
 
     <!-- record the trajectory if enabled -->
-    <group if="$(arg dosave)">
+    <!-- <group if="$(arg dosave)">
         <node name="recorder_estimate" pkg="ov_eval" type="pose_to_file" output="screen" required="true">
             <param name="topic"      type="str" value="/ov_msckf/poseimu" />
             <param name="topic_type" type="str" value="PoseWithCovarianceStamped" />
             <param name="output"     type="str" value="$(arg path_est)" />
         </node>
-    </group>
+    </group> -->
 
     <!-- path viz of aligned gt -->
     <group if="$(arg dolivetraj)">

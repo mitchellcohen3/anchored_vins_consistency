@@ -33,7 +33,6 @@ using namespace ov_core;
 using namespace ov_msckf;
 
 Simulator::Simulator(VioManagerOptions &params_) {
-
   //===============================================================
   //===============================================================
 
@@ -43,8 +42,9 @@ Simulator::Simulator(VioManagerOptions &params_) {
   PRINT_DEBUG("=======================================\n");
 
   // Store a copy of our params
-  // NOTE: We need to explicitly create a copy of our shared pointers to the camera objects
-  // NOTE: Otherwise if we perturb it would also change our "true" parameters
+  // NOTE: We need to explicitly create a copy of our shared pointers to the
+  // camera objects NOTE: Otherwise if we perturb it would also change our
+  // "true" parameters
   this->params = params_;
   params.camera_intrinsics.clear();
   for (auto const &tmp : params_.camera_intrinsics) {
@@ -81,7 +81,6 @@ Simulator::Simulator(VioManagerOptions &params_) {
   double distance = 0.0;
   double distancethreshold = params.sim_distance_threshold;
   while (true) {
-
     // Get the pose at the current timestep
     Eigen::Matrix3d R_GtoI;
     Eigen::Vector3d p_IinG;
@@ -89,7 +88,8 @@ Simulator::Simulator(VioManagerOptions &params_) {
 
     // Check if it fails
     if (!success_pose) {
-      PRINT_ERROR(RED "[SIM]: unable to find jolt in the groundtruth data to initialize at\n" RESET);
+      PRINT_ERROR(RED "[SIM]: unable to find jolt in the groundtruth data to "
+                      "initialize at\n" RESET);
       std::exit(EXIT_FAILURE);
     }
 
@@ -132,6 +132,8 @@ Simulator::Simulator(VioManagerOptions &params_) {
   gen_state_perturb.seed(params.sim_seed_preturb);
   gen_meas_imu = std::mt19937(params.sim_seed_measurements);
   gen_meas_imu.seed(params.sim_seed_measurements);
+  gen_state_imu_perturb = std::mt19937(params.sim_seed_imu_perturb);
+  gen_state_imu_perturb.seed(params.sim_seed_imu_perturb);
 
   // Create generator for our camera
   for (int i = 0; i < params.state_options.num_cameras; i++) {
@@ -144,7 +146,6 @@ Simulator::Simulator(VioManagerOptions &params_) {
 
   // Perturb all calibration if we should
   if (params.sim_do_perturbation) {
-
     // Do the perturbation
     perturb_parameters(gen_state_perturb, params_);
 
@@ -158,48 +159,52 @@ Simulator::Simulator(VioManagerOptions &params_) {
 
   //===============================================================
   //===============================================================
+  // Generate our feature map
+  if (params.sim_landmark_distribution == "random") {
+    // We will create synthetic camera frames and ensure that each has enough
+    // features double dt = 0.25/freq_cam;
+    double dt = 0.25;
+    size_t mapsize = featmap.size();
+    PRINT_DEBUG("[SIM]: Generating map features at %d rate\n", (int)(1.0 / dt));
 
-  // We will create synthetic camera frames and ensure that each has enough features
-  // double dt = 0.25/freq_cam;
-  double dt = 0.25;
-  size_t mapsize = featmap.size();
-  PRINT_DEBUG("[SIM]: Generating map features at %d rate\n", (int)(1.0 / dt));
+    // Loop through each camera
+    // NOTE: we loop through cameras here so that the feature map for camera 1
+    // will always be the same NOTE: thus when we add more cameras the first
+    // camera should get the same measurements
+    for (int i = 0; i < params.state_options.num_cameras; i++) {
+      // Reset the start time
+      double time_synth = spline->get_start_time();
 
-  // Loop through each camera
-  // NOTE: we loop through cameras here so that the feature map for camera 1 will always be the same
-  // NOTE: thus when we add more cameras the first camera should get the same measurements
-  for (int i = 0; i < params.state_options.num_cameras; i++) {
+      // Loop through each pose and generate our feature map in them!!!!
+      while (true) {
+        // Get the pose at the current timestep
+        Eigen::Matrix3d R_GtoI;
+        Eigen::Vector3d p_IinG;
+        bool success_pose = spline->get_pose(time_synth, R_GtoI, p_IinG);
 
-    // Reset the start time
-    double time_synth = spline->get_start_time();
+        // We have finished generating features
+        if (!success_pose)
+          break;
 
-    // Loop through each pose and generate our feature map in them!!!!
-    while (true) {
+        // Get the uv features for this frame
+        std::vector<std::pair<size_t, Eigen::VectorXf>> uvs = project_pointcloud(R_GtoI, p_IinG, i, featmap);
+        // If we do not have enough, generate more
+        if ((int)uvs.size() < params.num_pts) {
+          generate_points(R_GtoI, p_IinG, i, featmap, params.num_pts - (int)uvs.size());
+        }
 
-      // Get the pose at the current timestep
-      Eigen::Matrix3d R_GtoI;
-      Eigen::Vector3d p_IinG;
-      bool success_pose = spline->get_pose(time_synth, R_GtoI, p_IinG);
-
-      // We have finished generating features
-      if (!success_pose)
-        break;
-
-      // Get the uv features for this frame
-      std::vector<std::pair<size_t, Eigen::VectorXf>> uvs = project_pointcloud(R_GtoI, p_IinG, i, featmap);
-      // If we do not have enough, generate more
-      if ((int)uvs.size() < params.num_pts) {
-        generate_points(R_GtoI, p_IinG, i, featmap, params.num_pts - (int)uvs.size());
+        // Move forward in time
+        time_synth += dt;
       }
 
-      // Move forward in time
-      time_synth += dt;
+      // Debug print
+      PRINT_DEBUG("[SIM]: Generated %d map features in total over %d frames (camera "
+                  "%d)\n",
+                  (int)(featmap.size() - mapsize), (int)((time_synth - spline->get_start_time()) / dt), i);
+      mapsize = featmap.size();
     }
-
-    // Debug print
-    PRINT_DEBUG("[SIM]: Generated %d map features in total over %d frames (camera %d)\n", (int)(featmap.size() - mapsize),
-                (int)((time_synth - spline->get_start_time()) / dt), i);
-    mapsize = featmap.size();
+  } else if (params.sim_landmark_distribution == "square") {
+    generate_points_square();
   }
 
   // Nice sleep so the user can look at the printout
@@ -207,35 +212,51 @@ Simulator::Simulator(VioManagerOptions &params_) {
 }
 
 void Simulator::perturb_parameters(std::mt19937 gen_state, VioManagerOptions &params_) {
-
   // One std generator
   std::normal_distribution<double> w(0, 1);
 
+  StateOptions options = params_.state_options;
+
+  double sigma_time_offset = options.sigma_prior_timeoffset;
+  double sigma_cam_pose_att = options.sigma_prior_cam_pose_att;
+  double sigma_cam_pose_r = options.sigma_prior_cam_pose_r;
+  double sigma_cam_intrinsics = options.sigma_prior_cam_intrinsics;
+  double sigma_cam_dist = options.sigma_prior_cam_dist;
+
   // Camera IMU offset
-  params_.calib_camimu_dt += 0.01 * w(gen_state);
+  if (params_.state_options.do_calib_camera_timeoffset) {
+    params_.calib_camimu_dt += sigma_time_offset * w(gen_state);
+  }
 
   // Camera intrinsics and extrinsics
   for (int i = 0; i < params_.state_options.num_cameras; i++) {
-
     // Camera intrinsic properties (k1, k2, p1, p2, r1, r2, r3, r4)
     Eigen::MatrixXd intrinsics = params_.camera_intrinsics.at(i)->get_value();
     for (int r = 0; r < 4; r++) {
-      intrinsics(r) += 1.0 * w(gen_state);
+      intrinsics(r) += sigma_cam_intrinsics * w(gen_state);
     }
     for (int r = 4; r < 8; r++) {
-      intrinsics(r) += 0.005 * w(gen_state);
+      intrinsics(r) += sigma_cam_dist * w(gen_state);
     }
-    params_.camera_intrinsics.at(i)->set_value(intrinsics);
+
+    // Only actually apply if we are calibrating intrinsics
+    if (params_.state_options.do_calib_camera_intrinsics) {
+      params_.camera_intrinsics.at(i)->set_value(intrinsics);
+    }
 
     // Our camera extrinsics transform (orientation)
-    Eigen::Vector3d w_vec;
-    w_vec << 0.001 * w(gen_state), 0.001 * w(gen_state), 0.001 * w(gen_state);
-    params_.camera_extrinsics.at(i).block(0, 0, 4, 1) =
-        rot_2_quat(exp_so3(w_vec) * quat_2_Rot(params_.camera_extrinsics.at(i).block(0, 0, 4, 1)));
+    if (params_.state_options.do_calib_camera_pose) {
+      Eigen::Vector3d w_vec;
+      w_vec(0) = sigma_cam_pose_att * w(gen_state);
+      w_vec(1) = sigma_cam_pose_att * w(gen_state);
+      w_vec(2) = sigma_cam_pose_att * w(gen_state);
+      params_.camera_extrinsics.at(i).block(0, 0, 4, 1) =
+          rot_2_quat(exp_so3(w_vec) * quat_2_Rot(params_.camera_extrinsics.at(i).block(0, 0, 4, 1)));
 
-    // Our camera extrinsics transform (position)
-    for (int r = 4; r < 7; r++) {
-      params_.camera_extrinsics.at(i)(r) += 0.01 * w(gen_state);
+      // Our camera extrinsics transform (position)
+      for (int r = 4; r < 7; r++) {
+        params_.camera_extrinsics.at(i)(r) += sigma_cam_pose_r * w(gen_state);
+      }
     }
   }
 
@@ -265,7 +286,6 @@ void Simulator::perturb_parameters(std::mt19937 gen_state, VioManagerOptions &pa
 }
 
 bool Simulator::get_state(double desired_time, Eigen::Matrix<double, 17, 1> &imustate) {
-
   // Set to default state
   imustate.setZero();
   imustate(4) = 1;
@@ -309,7 +329,6 @@ bool Simulator::get_state(double desired_time, Eigen::Matrix<double, 17, 1> &imu
 }
 
 bool Simulator::get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vector3d &am) {
-
   // Return if the camera measurement should go before us
   if (timestamp_last_cam + 1.0 / params.sim_freq_cam < timestamp_last_imu + 1.0 / params.sim_freq_imu)
     return false;
@@ -325,8 +344,10 @@ bool Simulator::get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vecto
 
   // Get the pose, velocity, and acceleration
   // NOTE: we get the acceleration between our two IMU
-  // NOTE: this is because we are using a constant measurement model for integration
-  // bool success_accel = spline->get_acceleration(timestamp+0.5/freq_imu, R_GtoI, p_IinG, w_IinI, v_IinG, alpha_IinI, a_IinG);
+  // NOTE: this is because we are using a constant measurement model for
+  // integration bool success_accel =
+  // spline->get_acceleration(timestamp+0.5/freq_imu, R_GtoI, p_IinG, w_IinI,
+  // v_IinG, alpha_IinI, a_IinG);
   bool success_accel = spline->get_acceleration(timestamp, R_GtoI, p_IinG, w_IinI, v_IinG, alpha_IinI, a_IinG);
 
   // If failed, then that means we don't have any more spline
@@ -360,14 +381,15 @@ bool Simulator::get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vecto
   double dt = 1.0 / params.sim_freq_imu;
   std::normal_distribution<double> w(0, 1);
   if (has_skipped_first_bias) {
-
-    // Move the biases forward in time
-    true_bias_gyro(0) += params.imu_noises.sigma_wb * std::sqrt(dt) * w(gen_meas_imu);
-    true_bias_gyro(1) += params.imu_noises.sigma_wb * std::sqrt(dt) * w(gen_meas_imu);
-    true_bias_gyro(2) += params.imu_noises.sigma_wb * std::sqrt(dt) * w(gen_meas_imu);
-    true_bias_accel(0) += params.imu_noises.sigma_ab * std::sqrt(dt) * w(gen_meas_imu);
-    true_bias_accel(1) += params.imu_noises.sigma_ab * std::sqrt(dt) * w(gen_meas_imu);
-    true_bias_accel(2) += params.imu_noises.sigma_ab * std::sqrt(dt) * w(gen_meas_imu);
+    if (params.sim_noise_active) {
+      // Move the biases forward in time
+      true_bias_gyro(0) += params.imu_noises.sigma_wb * std::sqrt(dt) * w(gen_meas_imu);
+      true_bias_gyro(1) += params.imu_noises.sigma_wb * std::sqrt(dt) * w(gen_meas_imu);
+      true_bias_gyro(2) += params.imu_noises.sigma_wb * std::sqrt(dt) * w(gen_meas_imu);
+      true_bias_accel(0) += params.imu_noises.sigma_ab * std::sqrt(dt) * w(gen_meas_imu);
+      true_bias_accel(1) += params.imu_noises.sigma_ab * std::sqrt(dt) * w(gen_meas_imu);
+      true_bias_accel(2) += params.imu_noises.sigma_ab * std::sqrt(dt) * w(gen_meas_imu);
+    }
 
     // Append the current true bias to our history
     hist_true_bias_time.push_back(timestamp_last_imu);
@@ -375,6 +397,13 @@ bool Simulator::get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vecto
     hist_true_bias_accel.push_back(true_bias_accel);
   }
   has_skipped_first_bias = true;
+
+  if (!params.sim_noise_active) {
+    // No noise case
+    wm = omega_inGYRO + true_bias_gyro;
+    am = accel_inACC + true_bias_accel;
+    return true;
+  }
 
   // Now add noise to these measurements
   wm(0) = omega_inGYRO(0) + true_bias_gyro(0) + params.imu_noises.sigma_w / std::sqrt(dt) * w(gen_meas_imu);
@@ -390,7 +419,6 @@ bool Simulator::get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vecto
 
 bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
                              std::vector<std::vector<std::pair<size_t, Eigen::VectorXf>>> &feats) {
-
   // Return if the imu measurement should go before us
   if (timestamp_last_imu + 1.0 / params.sim_freq_imu < timestamp_last_cam + 1.0 / params.sim_freq_cam)
     return false;
@@ -413,14 +441,14 @@ bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
 
   // Loop through each camera
   for (int i = 0; i < params.state_options.num_cameras; i++) {
-
     // Get the uv features for this frame
     std::vector<std::pair<size_t, Eigen::VectorXf>> uvs = project_pointcloud(R_GtoI, p_IinG, i, featmap);
 
     // If we do not have enough, generate more
     if ((int)uvs.size() < params.num_pts) {
-      PRINT_WARNING(YELLOW "[SIM]: cam %d was unable to generate enough features (%d < %d projections)\n" RESET, (int)i, (int)uvs.size(),
-                    params.num_pts);
+      PRINT_WARNING(YELLOW "[SIM]: cam %d was unable to generate enough features (%d "
+                           "< %d projections)\n" RESET,
+                    (int)i, (int)uvs.size(), params.num_pts);
     }
 
     // If greater than only select the first set
@@ -428,17 +456,20 @@ bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
       uvs.erase(uvs.begin() + params.num_pts, uvs.end());
     }
 
-    // Append the map size so all cameras have unique features in them (but the same map)
-    // Only do this if we are not enforcing stereo constraints between all our cameras
+    // Append the map size so all cameras have unique features in them (but the
+    // same map) Only do this if we are not enforcing stereo constraints between
+    // all our cameras
     for (size_t f = 0; f < uvs.size() && !params.use_stereo; f++) {
       uvs.at(f).first += i * featmap.size();
     }
 
     // Loop through and add noise to each uv measurement
-    std::normal_distribution<double> w(0, 1);
-    for (size_t j = 0; j < uvs.size(); j++) {
-      uvs.at(j).second(0) += params.msckf_options.sigma_pix * w(gen_meas_cams.at(i));
-      uvs.at(j).second(1) += params.msckf_options.sigma_pix * w(gen_meas_cams.at(i));
+    if (params.sim_noise_active) {
+      std::normal_distribution<double> w(0, 1);
+      for (size_t j = 0; j < uvs.size(); j++) {
+        uvs.at(j).second(0) += params.msckf_options.sigma_pix * w(gen_meas_cams.at(i));
+        uvs.at(j).second(1) += params.msckf_options.sigma_pix * w(gen_meas_cams.at(i));
+      }
     }
 
     // Push back for this camera
@@ -453,7 +484,6 @@ bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
 std::vector<std::pair<size_t, Eigen::VectorXf>> Simulator::project_pointcloud(const Eigen::Matrix3d &R_GtoI, const Eigen::Vector3d &p_IinG,
                                                                               int camid,
                                                                               const std::unordered_map<size_t, Eigen::Vector3d> &feats) {
-
   // Assert we have good camera
   assert(camid < params.state_options.num_cameras);
   assert((int)params.camera_intrinsics.size() == params.state_options.num_cameras);
@@ -469,7 +499,6 @@ std::vector<std::pair<size_t, Eigen::VectorXf>> Simulator::project_pointcloud(co
 
   // Loop through our map
   for (const auto &feat : feats) {
-
     // Transform feature into current camera frame
     Eigen::Vector3d p_FinI = R_GtoI * (feat.second - p_IinG);
     Eigen::Vector3d p_FinC = R_ItoC * p_FinI + p_IinC;
@@ -498,9 +527,37 @@ std::vector<std::pair<size_t, Eigen::VectorXf>> Simulator::project_pointcloud(co
   return uvs;
 }
 
+void Simulator::generate_points_square() {
+  int num_per_size = params.num_pts * 4;
+  double square_size = 5.0;
+  double height = 5.0;
+
+  // Generate points along four sizes of a square
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < num_per_size; j++) {
+      // Uniformly randomly generate within our fov
+      std::uniform_real_distribution<double> gen_pos(-square_size, square_size);
+      std::uniform_real_distribution<double> gen_height(0.0, height);
+      Eigen::Vector3d p_FinG;
+      if (i == 0) {
+        p_FinG << gen_pos(gen_state_init), -square_size, gen_height(gen_state_init);
+      } else if (i == 1) {
+        p_FinG << square_size, gen_pos(gen_state_init), gen_height(gen_state_init);
+      } else if (i == 2) {
+        p_FinG << gen_pos(gen_state_init), square_size, gen_height(gen_state_init);
+      } else {
+        p_FinG << -square_size, gen_pos(gen_state_init), gen_height(gen_state_init);
+      }
+
+      // Append this as a new feature
+      featmap.insert({id_map, p_FinG});
+      id_map++;
+    }
+  }
+}
+
 void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vector3d &p_IinG, int camid,
                                 std::unordered_map<size_t, Eigen::Vector3d> &feats, int numpts) {
-
   // Assert we have good camera
   assert(camid < params.state_options.num_cameras);
   assert((int)params.camera_intrinsics.size() == params.state_options.num_cameras);
@@ -513,7 +570,6 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
 
   // Generate the desired number of features
   for (int i = 0; i < numpts; i++) {
-
     // Uniformly randomly generate within our fov
     std::uniform_real_distribution<double> gen_u(0, camera->w());
     std::uniform_real_distribution<double> gen_v(0, camera->h());
@@ -544,4 +600,108 @@ void Simulator::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vect
     featmap.insert({id_map, p_FinG});
     id_map++;
   }
+}
+
+Eigen::Matrix<double, 17, 1> Simulator::perturb_initial_state(const Eigen::Matrix<double, 17, 1> &init_state) {
+  if (!params.sim_do_imu_perturbation) {
+    return init_state;
+  }
+
+  // Generate a 15 x 1 perturbation
+  Eigen::Matrix<double, 15, 1> delta_x;
+  std::normal_distribution<double> w(0, 1);
+  delta_x(0) = params.sigma_init_att * w(gen_state_imu_perturb);
+  delta_x(1) = params.sigma_init_att * w(gen_state_imu_perturb);
+  delta_x(2) = 0.0; // No perturbation in orientation around gravity
+  delta_x(3) = 0.0; // No perturbation in position
+  delta_x(4) = 0.0;
+  delta_x(5) = 0.0;
+  delta_x(6) = params.sigma_init_vel * w(gen_state_imu_perturb);
+  delta_x(7) = params.sigma_init_vel * w(gen_state_imu_perturb);
+  delta_x(8) = params.sigma_init_vel * w(gen_state_imu_perturb);
+  delta_x(9) = params.sigma_init_bg * w(gen_state_imu_perturb);
+  delta_x(10) = params.sigma_init_bg * w(gen_state_imu_perturb);
+  delta_x(11) = params.sigma_init_bg * w(gen_state_imu_perturb);
+  delta_x(12) = params.sigma_init_ba * w(gen_state_imu_perturb);
+  delta_x(13) = params.sigma_init_ba * w(gen_state_imu_perturb);
+  delta_x(14) = params.sigma_init_ba * w(gen_state_imu_perturb);
+
+  // Get all the initial states
+  Eigen::Matrix3d C_ab = quat_2_Rot(init_state.block(1, 0, 4, 1)).transpose();
+  Eigen::Vector3d pos = init_state.block(5, 0, 3, 1);
+  Eigen::Vector3d vel = init_state.block(8, 0, 3, 1);
+  Eigen::Vector3d bg = init_state.block(11, 0, 3, 1);
+  Eigen::Vector3d ba = init_state.block(14, 0, 3, 1);
+
+  // Perturb the state based on the error definition
+  Eigen::Matrix<double, 17, 1> perturbed_state;
+  perturbed_state(0, 0) = init_state(0, 0);
+  if (params.state_options.nav_state_representation == ov_type::PoseStateRepresentation::DecoupledRight) {
+    Eigen::Matrix3d delta_C = exp_so3(delta_x.block<3, 1>(0, 0));
+    // Perturb on the left since the attitude perturbation has been defined in the global frame
+    Eigen::Matrix3d C_ab_perturbed = delta_C * C_ab;
+    perturbed_state.block(1, 0, 4, 1) = rot_2_quat(C_ab_perturbed.transpose());
+    perturbed_state.block(5, 0, 3, 1) = pos;
+    perturbed_state.block(8, 0, 3, 1) = vel + delta_x.block<3, 1>(6, 0);
+    perturbed_state.block(11, 0, 3, 1) = bg + delta_x.block<3, 1>(9, 0);
+    perturbed_state.block(14, 0, 3, 1) = ba + delta_x.block<3, 1>(12, 0);
+  } else if (params.state_options.nav_state_representation == ov_type::PoseStateRepresentation::LieGroupLeft) {
+    // Construct an element of SE_2(3) from the initial state
+    Eigen::Matrix<double, 5, 5> T_ab = Eigen::Matrix<double, 5, 5>::Identity();
+    T_ab.block(0, 0, 3, 3) = C_ab;
+    T_ab.block(0, 3, 3, 1) = pos;
+    T_ab.block(0, 4, 3, 1) = vel;
+
+    // Perturb using left multiplication on SE_2(3)
+    Eigen::Matrix<double, 5, 5> delta_T = SE23::expMap(delta_x.block<9, 1>(0, 0));
+    Eigen::Matrix<double, 5, 5> T_ab_perturbed = delta_T * T_ab;
+    Eigen::Matrix3d C_ab_perturbed = T_ab_perturbed.block(0, 0, 3, 3);
+    perturbed_state.block(1, 0, 4, 1) = rot_2_quat(C_ab_perturbed.transpose());
+    perturbed_state.block(5, 0, 3, 1) = T_ab_perturbed.block(0, 3, 3, 1);
+    perturbed_state.block(8, 0, 3, 1) = T_ab_perturbed.block(0, 4, 3, 1);
+    perturbed_state.block(11, 0, 3, 1) = bg + delta_x.block<3, 1>(9, 0);
+    perturbed_state.block(14, 0, 3, 1) = ba + delta_x.block<3, 1>(12, 0);
+  } else {
+    PRINT_ERROR(RED "[SIM]: unknown nav state representation for imu perturbation\n" RESET);
+    std::exit(EXIT_FAILURE);
+  }
+
+  PRINT_DEBUG("[SIM] : pertrubed initial state\n");
+  std::cout << "delta_x: " << delta_x.transpose() << std::endl;
+  return perturbed_state;
+}
+
+Eigen::Matrix<double, 15, 15> Simulator::get_initial_covariance(const Eigen::Matrix<double, 17, 1> &init_state) {
+  // Eigen::Matrix<double, 15, 15> P0 =
+  //     1e-4 * Eigen::Matrix<double, 15, 15>::Identity();
+  Eigen::Matrix<double, 15, 15> P0 = Eigen::Matrix<double, 15, 15>::Identity() * params.init_scaling;
+  if (!params.sim_do_imu_perturbation) {
+    return P0;
+  }
+
+  // Else, set the initial covariance based on our initial perturbation values
+  if (params.state_options.nav_state_representation == ov_type::PoseStateRepresentation::LieGroupLeft) {
+    P0(0, 0) = params.sigma_init_att * params.sigma_init_att;
+    P0(1, 1) = params.sigma_init_att * params.sigma_init_att;
+  } else if (params.state_options.nav_state_representation == ov_type::PoseStateRepresentation::DecoupledRight) {
+    // Initialize the covariance in the global frame and propagate to the local frame
+    Eigen::Matrix3d cov_rot_global = Eigen::Matrix3d::Identity() * params.init_scaling;
+    cov_rot_global(0, 0) = params.sigma_init_att * params.sigma_init_att;
+    cov_rot_global(1, 1) = params.sigma_init_att * params.sigma_init_att;
+    Eigen::Matrix3d C_ab = quat_2_Rot(init_state.block(1, 0, 4, 1)).transpose();
+    P0.block<3, 3>(0, 0) = C_ab.transpose() * cov_rot_global * C_ab;
+  } else {
+    PRINT_ERROR(RED "[SIM]: Unsupported nav state representation for initial covariance\n" RESET);
+    std::exit(EXIT_FAILURE);
+  }
+  P0.block<3, 3>(6, 6) = params.sigma_init_vel * params.sigma_init_vel * Eigen::Matrix3d::Identity();
+  P0.block<3, 3>(9, 9) = params.sigma_init_bg * params.sigma_init_bg * Eigen::Matrix3d::Identity();
+  P0.block<3, 3>(12, 12) = params.sigma_init_ba * params.sigma_init_ba * Eigen::Matrix3d::Identity();
+
+  std::cout << "Initial att covariance: \n" << P0.block<3, 3>(0, 0) << std::endl;
+  std::cout << "Initial pos covariance: \n" << P0.block<3, 3>(3, 3) << std::endl;
+  std::cout << "Initial vel covariance: \n" << P0.block<3, 3>(6, 6) << std::endl;
+  std::cout << "Initial bg covariance: \n" << P0.block<3, 3>(9, 9) << std::endl;
+  std::cout << "Initial ba covariance: \n" << P0.block<3, 3>(12, 12) << std::endl;
+  return P0;
 }

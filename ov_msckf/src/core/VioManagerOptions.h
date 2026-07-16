@@ -100,6 +100,9 @@ struct VioManagerOptions {
   /// The path to the file we will record the timing information into
   std::string record_timing_filepath = "ov_msckf_timing.txt";
 
+  // The fudge factor for our initial covariance
+  double init_scaling = 1e-6;
+
   /**
    * @brief This function will load print out all estimator settings loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -119,6 +122,7 @@ struct VioManagerOptions {
       parser->parse_config("zupt_only_at_beginning", zupt_only_at_beginning);
       parser->parse_config("record_timing_information", record_timing_information);
       parser->parse_config("record_timing_filepath", record_timing_filepath);
+      parser->parse_config("init_scaling", init_scaling);
     }
     PRINT_DEBUG("  - dt_slam_delay: %.1f\n", dt_slam_delay);
     PRINT_DEBUG("  - zero_velocity_update: %d\n", try_zupt);
@@ -128,6 +132,7 @@ struct VioManagerOptions {
     PRINT_DEBUG("  - zupt_only_at_beginning?: %d\n", zupt_only_at_beginning);
     PRINT_DEBUG("  - record timing?: %d\n", (int)record_timing_information);
     PRINT_DEBUG("  - record timing filepath: %s\n", record_timing_filepath.c_str());
+    PRINT_DEBUG("  - init_scaling: %.2e\n", init_scaling);
   }
 
   // NOISE / CHI2 ============================
@@ -510,12 +515,24 @@ struct VioManagerOptions {
   /// Seed for calibration perturbations. Change this to perturb by different random values if perturbations are enabled.
   int sim_seed_preturb = 0;
 
+  // Seed for initial IMU perturbations
+  int sim_seed_imu_perturb = 0;
+
   /// Measurement noise seed. This should be incremented for each run in the Monte-Carlo simulation to generate the same true measurements,
   /// but diffferent noise values.
   int sim_seed_measurements = 0;
 
   /// If we should perturb the calibration that the estimator starts with
   bool sim_do_perturbation = false;
+
+  // Whether or not to perturb the initial IMU state 
+  bool sim_do_imu_perturbation = false;
+
+  // Initial perturbation sigmas if we're doing IMU perturbation
+  double sigma_init_att = 0.1;
+  double sigma_init_vel = 0.1;
+  double sigma_init_bg = 0.02;
+  double sigma_init_ba = 0.03;
 
   /// Path to the trajectory we will b-spline and simulate on. Should be time(s),pos(xyz),ori(xyzw) format.
   std::string sim_traj_path = "src/open_vins/ov_data/sim/udel_gore.txt";
@@ -536,6 +553,12 @@ struct VioManagerOptions {
   /// Feature distance we generate features from (maximum)
   double sim_max_feature_gen_distance = 10;
 
+  // Whether or not to add noise to the simulation
+  bool sim_noise_active = true;
+
+  // The landmark distribution to use (random, square, etc)
+  std::string sim_landmark_distribution = "random";
+
   /**
    * @brief This function will load print out all simulated parameters.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -554,18 +577,38 @@ struct VioManagerOptions {
       parser->parse_config("sim_freq_imu", sim_freq_imu);
       parser->parse_config("sim_min_feature_gen_dist", sim_min_feature_gen_distance);
       parser->parse_config("sim_max_feature_gen_dist", sim_max_feature_gen_distance);
+      parser->parse_config("sim_noise_active", sim_noise_active);
+      parser->parse_config("sim_landmark_distribution", sim_landmark_distribution);
+
+      parser->parse_config("sim_seed_imu_perturb", sim_seed_imu_perturb);
+      parser->parse_config("sim_do_imu_perturbation", sim_do_imu_perturbation);
+      parser->parse_config("sim_sigma_init_att", sigma_init_att);
+      parser->parse_config("sim_sigma_init_vel", sigma_init_vel);
+      parser->parse_config("sim_sigma_init_bg", sigma_init_bg);
+      parser->parse_config("sim_sigma_init_ba", sigma_init_ba);
     }
     PRINT_DEBUG("SIMULATION PARAMETERS:\n");
     PRINT_WARNING(BOLDRED "  - state init seed: %d \n" RESET, sim_seed_state_init);
     PRINT_WARNING(BOLDRED "  - perturb seed: %d \n" RESET, sim_seed_preturb);
     PRINT_WARNING(BOLDRED "  - measurement seed: %d \n" RESET, sim_seed_measurements);
     PRINT_WARNING(BOLDRED "  - do perturb?: %d\n" RESET, sim_do_perturbation);
+
+    // Initial IMU perturbation
+    PRINT_WARNING(BOLDRED "  - do imu perturb?: %d\n" RESET, sim_do_imu_perturbation);
+    PRINT_WARNING(BOLDRED "  - imu perturb seed: %d \n" RESET, sim_seed_imu_perturb);
+    PRINT_WARNING(BOLDRED "    - sigma_init_att: %.3f deg\n" RESET, sigma_init_att);
+    PRINT_WARNING(BOLDRED "    - sigma_init_vel: %.3f m/s\n" RESET, sigma_init_vel);
+    PRINT_WARNING(BOLDRED "    - sigma_init_bg: %.3f rad/s\n" RESET, sigma_init_bg);
+    PRINT_WARNING(BOLDRED "    - sigma_init_ba: %.3f m/s^2\n" RESET, sigma_init_ba);
+
     PRINT_DEBUG("  - traj path: %s\n", sim_traj_path.c_str());
     PRINT_DEBUG("  - dist thresh: %.2f\n", sim_distance_threshold);
     PRINT_DEBUG("  - cam feq: %.2f\n", sim_freq_cam);
     PRINT_DEBUG("  - imu feq: %.2f\n", sim_freq_imu);
     PRINT_DEBUG("  - min feat dist: %.2f\n", sim_min_feature_gen_distance);
     PRINT_DEBUG("  - max feat dist: %.2f\n", sim_max_feature_gen_distance);
+    PRINT_DEBUG("  - noise active?: %d\n", sim_noise_active);
+    PRINT_DEBUG("  - landmark distribution: %s\n", sim_landmark_distribution.c_str());
   }
 };
 

@@ -384,6 +384,14 @@ protected:
                              Eigen::Vector4d &new_q, Eigen::Vector3d &new_v, Eigen::Vector3d &new_p, Eigen::Matrix<double, 3, 18> &Xi_sum);
 
   /**
+   * @brief Computes the mean using Lie group formulation.
+   *
+   * Should be the same as predict_mean_analytic.
+   */
+  void predict_mean_lie_group(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat, const Eigen::Vector3d &a_hat,
+                              Eigen::Vector4d &new_q, Eigen::Vector3d &new_v, Eigen::Vector3d &new_p);
+
+  /**
    * @brief Analytically compute state transition matrix F and noise Jacobian G based on ACI^2
    *
    * This function is for analytical integration of the linearized error-state.
@@ -430,6 +438,18 @@ protected:
   void compute_F_and_G_discrete(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat, const Eigen::Vector3d &a_hat,
                                 const Eigen::Vector3d &w_uncorrected, const Eigen::Vector3d &a_uncorrected, const Eigen::Vector4d &new_q,
                                 const Eigen::Vector3d &new_v, const Eigen::Vector3d &new_p, Eigen::MatrixXd &F, Eigen::MatrixXd &G);
+
+  /**
+   * @brief Computes the discrete-time Jacobians using the continuous-time
+   * linearization. This function can support numerous 
+   */
+  void compute_F_and_Qd_continuous(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat, const Eigen::Vector3d &a_hat,
+                                   Eigen::MatrixXd &F, Eigen::MatrixXd &Qd);
+
+  /**
+   * @brief Computes the Psi matrix needed for mean propagation.
+   */
+  void compute_psi_matrix(const Eigen::Vector3d &omega, Eigen::Matrix3d &Psi);
 
   /// Container for the noise values
   NoiseManager _noises;

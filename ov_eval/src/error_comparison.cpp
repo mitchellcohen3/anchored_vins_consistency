@@ -17,11 +17,15 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * 
+ * This executable has been modified from the original to output ATE/RPE results into CSV files
+ * that can be used for external plotting.
  */
 
 #include <Eigen/Eigen>
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -47,9 +51,25 @@ int main(int argc, char **argv) {
   // Ensure we have a path
   if (argc < 4) {
     PRINT_ERROR(RED "ERROR: Please specify a align mode, folder, and algorithms\n" RESET);
-    PRINT_ERROR(RED "ERROR: ./error_comparison <align_mode> <folder_groundtruth> <folder_algorithms>\n" RESET);
-    PRINT_ERROR(RED "ERROR: rosrun ov_eval error_comparison <align_mode> <folder_groundtruth> <folder_algorithms>\n" RESET);
+    PRINT_ERROR(RED "ERROR: ./error_comparison <align_mode> <folder_groundtruth> <folder_algorithms> [--no-plots] [--output-dir <dir>]\n" RESET);
+    PRINT_ERROR(RED "ERROR: rosrun ov_eval error_comparison <align_mode> <folder_groundtruth> <folder_algorithms> [--no-plots] [--output-dir <dir>]\n" RESET);
     std::exit(EXIT_FAILURE);
+  }
+
+  // Check for --no-plots flag and --output-dir <dir> option
+  bool generate_plots = true;
+  std::string output_dir_arg;
+  for (int i = 1; i < argc; i++) {
+    std::string arg(argv[i]);
+    if (arg == "--no-plots") {
+      generate_plots = false;
+    } else if (arg == "--output-dir") {
+      if (i + 1 >= argc) {
+        PRINT_ERROR(RED "ERROR: --output-dir requires a directory argument\n" RESET);
+        std::exit(EXIT_FAILURE);
+      }
+      output_dir_arg = argv[++i];
+    }
   }
 
   // List the groundtruth files in this folder
@@ -77,6 +97,14 @@ int main(int argc, char **argv) {
   // Get the algorithms we will process
   // Also create empty statistic objects for each of our datasets
   std::string path_algos(argv[3]);
+
+  // Where to write the output CSVs. Defaults to path_algos for backwards
+  // compatibility, but can be redirected with --output-dir <dir>.
+  std::string path_output = output_dir_arg.empty() ? path_algos : output_dir_arg;
+  if (!output_dir_arg.empty()) {
+    boost::filesystem::create_directories(path_output);
+  }
+
   std::vector<boost::filesystem::path> path_algorithms;
   for (const auto &entry : boost::filesystem::directory_iterator(path_algos)) {
     if (boost::filesystem::is_directory(entry)) {
@@ -341,7 +369,95 @@ int main(int argc, char **argv) {
   }
   PRINT_INFO("============================================\n");
 
+  //===============================================================================
+  //===============================================================================
+  //===============================================================================
+
+  // Write ATE results to CSV
+  {
+    std::string ate_path = path_output + "/ate_results.csv";
+    std::ofstream f(ate_path);
+    f << "algorithm,dataset,mean_ori,std_ori,median_ori,mean_pos,std_pos,median_pos,num_runs\n";
+    for (auto &algo : algo_ate) {
+      for (size_t j = 0; j < path_groundtruths.size(); j++) {
+        auto &ori = algo.second.at(j).first;
+        auto &pos = algo.second.at(j).second;
+        std::string dataset = path_groundtruths.at(j).stem().string();
+        if (ori.values.empty() || pos.values.empty()) {
+          f << algo.first << "," << dataset << ",,,,,,,0\n";
+        } else {
+          f << algo.first << "," << dataset << "," << ori.mean << "," << ori.std << "," << ori.median << "," << pos.mean << ","
+            << pos.std << "," << pos.median << "," << (int)pos.values.size() << "\n";
+        }
+      }
+    }
+    PRINT_INFO("[COMP]: ATE results written to %s\n", ate_path.c_str());
+  }
+
+  // Write ATE 2D results to CSV
+  {
+    std::string ate_2d_path = path_output + "/ate_2d_results.csv";
+    std::ofstream f(ate_2d_path);
+    f << "algorithm,dataset,mean_ori,std_ori,median_ori,mean_pos,std_pos,median_pos,num_runs\n";
+    for (auto &algo : algo_ate_2d) {
+      for (size_t j = 0; j < path_groundtruths.size(); j++) {
+        auto &ori = algo.second.at(j).first;
+        auto &pos = algo.second.at(j).second;
+        std::string dataset = path_groundtruths.at(j).stem().string();
+        if (ori.values.empty() || pos.values.empty()) {
+          f << algo.first << "," << dataset << ",,,,,,,0\n";
+        } else {
+          f << algo.first << "," << dataset << "," << ori.mean << "," << ori.std << "," << ori.median << "," << pos.mean << ","
+            << pos.std << "," << pos.median << "," << (int)pos.values.size() << "\n";
+        }
+      }
+    }
+    PRINT_INFO("[COMP]: ATE 2D results written to %s\n", ate_2d_path.c_str());
+  }
+
+  // Write RPE results to CSV
+  {
+    std::string rpe_path = path_output + "/rpe_results.csv";
+    std::ofstream f(rpe_path);
+    f << "algorithm,segment_m,mean_ori,std_ori,median_ori,mean_pos,std_pos,median_pos,num_samples\n";
+    for (auto &algo : algo_rpe) {
+      for (auto &seg : algo.second) {
+        auto &ori = seg.second.first;
+        auto &pos = seg.second.second;
+        f << algo.first << "," << seg.first << "," << ori.mean << "," << ori.std << "," << ori.median << "," << pos.mean << ","
+          << pos.std << "," << pos.median << "," << (int)pos.values.size() << "\n";
+      }
+    }
+    PRINT_INFO("[COMP]: RPE results written to %s\n", rpe_path.c_str());
+  }
+
+  // Write raw RPE samples to CSV for external plotting (e.g. Python boxplots)
+  {
+    std::string rpe_samples_path = path_output + "/rpe_raw_samples.csv";
+    std::ofstream f(rpe_samples_path);
+    f << "algorithm,segment_m,ori_error,pos_error\n";
+    for (auto &algo : algo_rpe) {
+      for (auto &seg : algo.second) {
+        const auto &ori_vals = seg.second.first.values;
+        const auto &pos_vals = seg.second.second.values;
+        size_t n = std::min(ori_vals.size(), pos_vals.size());
+
+        // Check to see if ori_vals.size() matches pos_vals.size()
+        PRINT_INFO("[COMP]: Writing RPE raw samples for %s algorithm, segment %.1fm => %d samples\n", algo.first.c_str(), seg.first, (int)n);
+        for (size_t k = 0; k < n; k++) {
+          f << algo.first << "," << seg.first << "," << ori_vals.at(k) << "," << pos_vals.at(k) << "\n";
+        }
+      }
+    }
+    PRINT_INFO("[COMP]: RPE raw samples written to %s\n", rpe_samples_path.c_str());
+  }
+
 #ifdef HAVE_PYTHONLIBS
+
+  if (!generate_plots) {
+    PRINT_INFO("[COMP]: --no-plots flag set, skipping plot generation\n");
+    return EXIT_SUCCESS;
+  }
 
   // Plot line colors
   std::vector<std::string> colors = {"blue", "red", "black", "green", "cyan", "magenta"};

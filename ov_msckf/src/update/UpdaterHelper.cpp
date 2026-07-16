@@ -43,7 +43,11 @@ void UpdaterHelper::get_feature_jacobian_representation(std::shared_ptr<State> s
   if (feature.feat_representation == LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH) {
 
     // Get the feature linearization point
-    Eigen::Matrix<double, 3, 1> p_FinG = (state->_options.do_fej) ? feature.p_FinG_fej : feature.p_FinG;
+    Eigen::Matrix<double, 3, 1> p_FinG = feature.p_FinG;
+    if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+      // PRINT_DEBUG("Using FEJ for feature Jacobian computation.\n");
+      p_FinG = feature.p_FinG_fej;
+    }
 
     // Get inverse depth representation (should match what is in Landmark.cpp)
     double g_rho = 1 / p_FinG.norm();
@@ -86,20 +90,32 @@ void UpdaterHelper::get_feature_jacobian_representation(std::shared_ptr<State> s
 
   // If I am doing FEJ, I should FEJ the anchor states (should we fej calibration???)
   // Also get the FEJ position of the feature if we are
-  if (state->_options.do_fej) {
-    // "Best" feature in the global frame
-    Eigen::Vector3d p_FinG_best = R_GtoI.transpose() * R_ItoC.transpose() * (feature.p_FinA - p_IinC) + p_IinG;
-    // Transform the best into our anchor frame using FEJ
-    R_GtoI = state->_clones_IMU.at(feature.anchor_clone_timestamp)->Rot_fej();
-    p_IinG = state->_clones_IMU.at(feature.anchor_clone_timestamp)->pos_fej();
-    p_FinA = (R_GtoI.transpose() * R_ItoC.transpose()).transpose() * (p_FinG_best - p_IinG) + p_IinC;
+  // Only use FEJ is we are not using LieGroupLeft representation
+  if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+      // PRINT_DEBUG("Using FEJ for anchored feature Jacobian computation.\n");
+      // "Best" feature in the global frame
+      Eigen::Vector3d p_FinG_best = R_GtoI.transpose() * R_ItoC.transpose() * (feature.p_FinA - p_IinC) + p_IinG;
+      // Transform the best into our anchor frame using FEJ
+      R_GtoI = state->_clones_IMU.at(feature.anchor_clone_timestamp)->Rot_fej();
+      p_IinG = state->_clones_IMU.at(feature.anchor_clone_timestamp)->pos_fej();
+      p_FinA = (R_GtoI.transpose() * R_ItoC.transpose()).transpose() * (p_FinG_best - p_IinG) + p_IinC;
   }
   Eigen::Matrix3d R_CtoG = R_GtoI.transpose() * R_ItoC.transpose();
 
   // Jacobian for our anchor pose
+  // The expression for the anchor pose Jacobian differs depending on how we represent the navigation state
   Eigen::Matrix<double, 3, 6> H_anc;
-  H_anc.block(0, 0, 3, 3).noalias() = -R_GtoI.transpose() * skew_x(R_ItoC.transpose() * (p_FinA - p_IinC));
-  H_anc.block(0, 3, 3, 3).setIdentity();
+  if (state->_options.nav_state_representation == ov_type::PoseStateRepresentation::LieGroupLeft) {
+    Eigen::Vector3d p_FinI = R_ItoC.transpose() * (p_FinA - p_IinC);
+    H_anc.block(0, 0, 3, 3).noalias() = skew_x(-R_GtoI.transpose() * p_FinI - p_IinG);
+    H_anc.block(0, 3, 3, 3).setIdentity();
+  } else if (state->_options.nav_state_representation == ov_type::PoseStateRepresentation::DecoupledRight) {
+    // Original Jacobian expressions
+    H_anc.block(0, 0, 3, 3).noalias() = -R_GtoI.transpose() * skew_x(R_ItoC.transpose() * (p_FinA - p_IinC));
+    H_anc.block(0, 3, 3, 3).setIdentity();
+  } else {
+    PRINT_ERROR("Unsupported navigation state representation for anchored feature Jacobian computation. \n");
+  }
 
   // Add anchor Jacobians to our return vector
   x_order.push_back(state->_clones_IMU.at(feature.anchor_clone_timestamp));
@@ -303,6 +319,8 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
   std::vector<std::shared_ptr<Type>> dpfg_dx_order;
   UpdaterHelper::get_feature_jacobian_representation(state, feature, dpfg_dlambda, dpfg_dx, dpfg_dx_order);
 
+  // PRINT_DEBUG("Size of dpfg_dx: %d\n", dpfg_dx.size());
+
   // Assert that all the ones in our order are already in our local jacobian mapping
 #ifndef NDEBUG
   for (auto &type : dpfg_dx_order) {
@@ -351,15 +369,26 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
       //=========================================================================
 
       // If we are doing first estimate Jacobians, then overwrite with the first estimates
-      if (state->_options.do_fej) {
-        R_GtoIi = clone_Ii->Rot_fej();
-        p_IiinG = clone_Ii->pos_fej();
-        // R_ItoC = calibration->Rot_fej();
-        // p_IinC = calibration->pos_fej();
+      // if (state->_options.do_fej) {
+      if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+          PRINT_DEBUG("FEJing pose for feature Jacobian computation.\n");
+          R_GtoIi = clone_Ii->Rot_fej();
+          p_IiinG = clone_Ii->pos_fej();
+
+          // R_ItoC = calibration->Rot_fej();
+          // p_IinC = calibration->pos_fej();
+          p_FinIi = R_GtoIi * (p_FinG_fej - p_IiinG);
+          p_FinCi = R_ItoC * p_FinIi + p_IinC;
+          // p_FinG = p_FinG_fej;
+          // uv_norm << p_FinCi(0) / p_FinCi(2), p_FinCi(1) / p_FinCi(2);
+          // cam_d = state->get_intrinsics_CAM(pair.first)->fej();
+      }
+
+      // For the decoupled right-invariant error representation,
+      // we only need to FEJ the feature position in the global frame, and we can use the best
+      if (state->_options.consistency_method == StateOptions::ConsistencyMethod::DRI_FEJ) {
         p_FinIi = R_GtoIi * (p_FinG_fej - p_IiinG);
         p_FinCi = R_ItoC * p_FinIi + p_IinC;
-        // uv_norm << p_FinCi(0)/p_FinCi(2),p_FinCi(1)/p_FinCi(2);
-        // cam_d = state->get_intrinsics_CAM(pair.first)->fej();
       }
 
       // Compute Jacobians in respect to normalized image coordinates and possibly the camera intrinsics
@@ -374,26 +403,76 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
       Eigen::MatrixXd dpfc_dpfg = R_ItoC * R_GtoIi;
 
       // Derivative of p_FinCi in respect to camera clone state
+      // NOTE: This Jacobian depends on the error definition for the pose!!
       Eigen::MatrixXd dpfc_dclone = Eigen::MatrixXd::Zero(3, 6);
-      dpfc_dclone.block(0, 0, 3, 3).noalias() = R_ItoC * skew_x(p_FinIi);
-      dpfc_dclone.block(0, 3, 3, 3) = -dpfc_dpfg;
 
-      //=========================================================================
-      //=========================================================================
-
-      // Precompute some matrices
+      // Precompute some matrices needed for the full Jacobian computation
+      // dz_dpfc is the Jacobian of the projection model
       Eigen::MatrixXd dz_dpfc = dz_dzn * dzn_dpfc;
+      // dz_dpfg is the Jacobian of the measurement model with respect to the 
+      // feature position in the global frame
       Eigen::MatrixXd dz_dpfg = dz_dpfc * dpfc_dpfg;
+      if (clone_Ii->state_rep() == ov_type::PoseStateRepresentation::DecoupledRight) {
+        // Original Jacobian expressions
+        dpfc_dclone.block(0, 0, 3, 3).noalias() = R_ItoC * skew_x(p_FinIi);
+        dpfc_dclone.block(0, 3, 3, 3) = -dpfc_dpfg;
+      } else if (clone_Ii->state_rep() == ov_type::PoseStateRepresentation::LieGroupLeft) {
+        // If we're using a DRI consistency method, we need to FEJ the feature postition in global frame
+        // for Jacobian computation
+        PRINT_DEBUG("Using Lie Group left for feature Jacobian computation.\n");
+        if (state->_options.consistency_method == StateOptions::ConsistencyMethod::DRI_FEJ) {
+          PRINT_DEBUG("Computing Jacobian with FEJ value of the feature position in global frame.\n");
+          dpfc_dclone.block(0, 0, 3, 3).noalias() = R_ItoC * R_GtoIi * skew_x(p_FinG_fej);
+        } else {
+          PRINT_WARNING("Shouldn't enter here...\n");
+          dpfc_dclone.block(0, 0, 3, 3).noalias() = R_ItoC * R_GtoIi * skew_x(p_FinG);
+        }
+        dpfc_dclone.block(0, 3, 3, 3) = -dpfc_dpfg;
+        // PRINT_DEBUG("Using Jacobians for Lie Group left!");
+      } else if (clone_Ii->state_rep() == ov_type::PoseStateRepresentation::LieGroupRight) {
+        dpfc_dclone.block(0, 0, 3, 3).noalias() = R_ItoC * skew_x(p_FinIi);
+        dpfc_dclone.block(0, 3, 3, 3) = -R_ItoC;
+      } else {
+        PRINT_ERROR("Unsupported pose state representation!");
+      }
+
+      //=========================================================================
+      //=========================================================================
+
+      // Get the full Jacobian for this method
+      // Jacobian of the measurement with respect to current clone
+      Eigen::Matrix<double, 2, 6> dz_dclone = dz_dpfc * dpfc_dclone;
+      // Jacobian of the measurement with respect to the feature representation
+      Eigen::MatrixXd dz_dlambda = dz_dpfg * dpfg_dlambda;
+
+      // Manually, set the derivative of measurement model with respect to
+      // the anchor pose if we're using a relative representation.
+      Eigen::Matrix<double, 2, 6> dz_danchoring_pose = Eigen::Matrix<double, 2, 6>::Zero();
+      if (LandmarkRepresentation::is_relative_representation(feature.feat_representation)) {
+        dz_danchoring_pose = dz_dpfg * dpfg_dx.at(0);
+      }
 
       // CHAINRULE: get the total feature Jacobian
-      H_f.block(2 * c, 0, 2, H_f.cols()).noalias() = dz_dpfg * dpfg_dlambda;
+      H_f.block(2 * c, 0, 2, H_f.cols()).noalias() = dz_dlambda;
 
       // CHAINRULE: get state clone Jacobian
-      H_x.block(2 * c, map_hx[clone_Ii], 2, clone_Ii->size()).noalias() = dz_dpfc * dpfc_dclone;
+      H_x.block(2 * c, map_hx[clone_Ii], 2, clone_Ii->size()).noalias() = dz_dclone;
 
       // CHAINRULE: loop through all extra states and add their
       // NOTE: we add the Jacobian here as we might be in the anchoring pose for this measurement
-      for (size_t i = 0; i < dpfg_dx_order.size(); i++) {
+      // This should only occur if we're using a relative feature representation
+      if (!LandmarkRepresentation::is_relative_representation(feature.feat_representation)) {
+        if (dpfg_dx.size() > 0) {
+          PRINT_ERROR("We have extra Jacobian terms for a non-relative feature representation! This should never happen. Check your math!");
+        }
+      } else {
+        // PRINT_DEBUG("Manually placing the anchoring pose Jacobian");
+        H_x.block(2 * c, map_hx[dpfg_dx_order.at(0)], 2, dpfg_dx_order.at(0)->size()).noalias() += dz_danchoring_pose;
+      }
+
+      // No need to manually place the rest
+      for (size_t i = 1; i < dpfg_dx_order.size(); i++) {
+        PRINT_DEBUG("WARNING: This should be the JAcobian with respect to the extrinsics!");
         H_x.block(2 * c, map_hx[dpfg_dx_order.at(i)], 2, dpfg_dx_order.at(i)->size()).noalias() += dz_dpfg * dpfg_dx.at(i);
       }
 

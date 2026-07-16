@@ -2,6 +2,8 @@
 
 verbosity: "INFO" # ALL, DEBUG, INFO, WARNING, ERROR, SILENT
 
+nav_state_representation: "decoupled_right" # Decoupled right
+perform_init_covariance_propagation: true # Whether or not to perform the covariance propagation for the initial covariance when we're using Lie group left representation.
 use_fej: true # if first-estimate Jacobians should be used (enable for good consistency)
 integration: "rk4" # discrete, rk4, analytical (if rk4 or analytical used then analytical covariance propagation is used)
 use_stereo: true # if we have more than 1 camera, if we should try to track stereo constraints between pairs
@@ -13,6 +15,22 @@ calib_cam_timeoffset: true # if timeoffset between camera and IMU should be opti
 calib_imu_intrinsics: false # if imu intrinsics should be calibrated (rotation and skew-scale matrix)
 calib_imu_g_sensitivity: false # if gyroscope gravity sensitivity (Tg) should be calibrated
 
+# Prior sigmas for calibration parameters
+sigma_prior_cam_pose_att: 0.005 # [rad]
+sigma_prior_cam_pose_r: 0.015 # [m]
+sigma_prior_cam_intrinsics: 1.0 # [pixels]
+sigma_prior_cam_dist: 0.005
+sigma_prior_timeoffset: 0.01
+init_scaling: 1e-7
+
+# Prior sigmas for the state
+# These match the initial covariance from the original code
+init_prior_q: 0.02
+init_prior_p: 0.05
+init_prior_v: 0.01
+init_prior_bg: 0.02
+init_prior_ba: 0.02
+
 max_clones: 11 # how many clones in the sliding window
 max_slam: 50 # number of features in our state vector
 max_slam_in_update: 25 # update can be split into sequential updates of batches, how many in a batch
@@ -22,8 +40,8 @@ dt_slam_delay: 1 # delay before initializing (helps with stability from bad init
 gravity_mag: 9.81 # magnitude of gravity in this location
 
 feat_rep_msckf: "GLOBAL_3D"
-feat_rep_slam: "ANCHORED_MSCKF_INVERSE_DEPTH"
-feat_rep_aruco: "ANCHORED_MSCKF_INVERSE_DEPTH"
+feat_rep_slam: "GLOBAL_3D"
+feat_rep_aruco: "GLOBAL_3D"
 
 # zero velocity update parameters we can use
 # we support either IMU-based or disparity detection.

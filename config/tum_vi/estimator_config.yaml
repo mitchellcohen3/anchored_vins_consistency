@@ -2,6 +2,11 @@
 
 verbosity: "INFO" # ALL, DEBUG, INFO, WARNING, ERROR, SILENT
 
+nav_state_representation: "decoupled_right"
+
+# Whether or not to perform the covariance propagation for the initial covariance when
+# we're using Lie group left representation.
+perform_init_covariance_propagation: true
 use_fej: true # if first-estimate Jacobians should be used (enable for good consistency)
 integration: "rk4" # discrete, rk4, analytical (if rk4 or analytical used then analytical covariance propagation is used)
 use_stereo: true # if we have more than 1 camera, if we should try to track stereo constraints
@@ -9,9 +14,24 @@ max_cameras: 2 # how many cameras we have 1 = mono, 2 = stereo, >2 = binocular (
 
 calib_cam_extrinsics: true
 calib_cam_intrinsics: true
-calib_cam_timeoffset: true
+calib_cam_timeoffset: false
 calib_imu_intrinsics: false
 calib_imu_g_sensitivity: false
+
+# Prior sigmas for calibration parameters
+sigma_prior_cam_pose_att: 0.005 # [rad]
+sigma_prior_cam_pose_r: 0.015 # [m]
+sigma_prior_cam_intrinsics: 1.0 # [pixels]
+sigma_prior_cam_dist: 0.005
+sigma_prior_timeoffset: 0.01
+init_scaling: 1e-7
+
+# Prior sigmas for the state
+init_prior_q: 0.1
+init_prior_p: 0.0
+init_prior_v: 1.0
+init_prior_bg: 0.01
+init_prior_ba: 0.05
 
 max_clones: 11
 max_slam: 50

@@ -1,45 +1,63 @@
 <launch>
 
 
-    <!-- ================================================================ -->
+    <!-- Note: we should not put default values in here!================================================================ -->
     <!-- ================================================================ -->
 
     <!-- what config we are going to run (should match folder name) -->
-    <arg name="verbosity"   default="INFO" /> <!-- ALL, DEBUG, INFO, WARNING, ERROR, SILENT -->
-    <arg name="config"      default="rpng_sim" />
-    <arg name="config_path" default="$(find ov_msckf)/../config/$(arg config)/estimator_config.yaml" />
+    <arg name="verbosity" /> <!-- ALL, DEBUG, INFO, WARNING, ERROR, SILENT -->
+    <arg name="config_path" />
 
     <!-- simulation parameters we can vary with our scripts -->
-    <arg name="seed"        default="5" />
-    <arg name="fej"         default="true" />
-    <arg name="feat_rep"    default="GLOBAL_3D" />
-    <arg name="num_clones"  default="11" />
-    <arg name="num_slam"    default="50" />
+    <arg name="seed" />
+    <!-- <arg name="fej"         default="true" /> -->
+    <arg name="consistency_method" /> <!-- none, fej, RI -->
+    <arg name="max_slam" />
+    <arg name="feat_rep" />
+    <arg name="max_cameras" />
+    <arg name="use_stereo" />
+
     <arg name="num_pts"     default="100" />
-    <arg name="max_cameras" default="2" />
-    <arg name="use_stereo"  default="true" />
+    <arg name="integration" />
+    <arg name="nav_state_representation" />
 
-    <arg name="feat_dist_min" default="5.0" />
-    <arg name="feat_dist_max" default="7.0" />
-
-    <arg name="freq_cam"    default="10" />
-    <arg name="freq_imu"    default="400" />
-    <arg name="dataset"    default="tum_corridor1_512_16_okvis.txt" /> <!-- udel_gore, udel_gore_zupt, tum_corridor1_512_16_okvis, udel_arl -->
-
+    <arg name="freq_cam"  />
+    <arg name="freq_imu"  />
+    <arg name="sim_traj_path" />
+    <arg name="feat_dist_min" />
+    <arg name="feat_dist_max" />
+    
     <!-- if we should perturb the initial state values (i.e. calibration) -->
-    <arg name="sim_do_perturbation"             default="true" />
-    <arg name="sim_do_calibration"              default="true" />
-    <arg name="sim_do_calib_imu_intrinsics"     default="true" />
-    <arg name="sim_do_calib_g_sensitivity"      default="true" />
+    <arg name="sim_do_perturbation"             default="false" />
+    <arg name="sim_calib_cam_intrinsics"       default="false" />
+    <arg name="sim_calib_timeoffset"           default="false" />
+    <arg name="sim_calib_extrinsics"            default="false" />
+    <arg name="sim_do_calib_imu_intrinsics"     default="false" />
+    <arg name="sim_do_calib_g_sensitivity"      default="false" />
+    <arg name="sim_sigma_pix"                   default="1.0" />
+
+    <!--If we should perturb the initial IMU state -->
+    <arg name="sim_do_imu_perturbation"         default="false" />
+    <arg name="sim_seed_imu_perturb"            default="10" />
+    <arg name="sim_sigma_init_att"              default="0.1" /> 
+    <arg name="sim_sigma_init_vel"              default="0.1" />
+    <arg name="sim_sigma_init_ba"               default="0.1" />
+    <arg name="sim_sigma_init_bg"               default="0.01" />
+    <arg name="init_scaling"                      default="1e-7" />
 
     <!-- saving trajectory paths -->
     <arg name="dosave_pose"     default="true" />
     <arg name="path_est"        default="$(find ov_eval)/data/sim/traj_estimate.txt" />
     <arg name="path_gt"         default="$(find ov_eval)/data/sim/traj_groundtruth.txt" />
+    <arg name="record_timing_information"  default="true" />
+    <arg name="record_timing_filepath"    default="$(find ov_eval)/data/sim/timing_information.txt" />
+
     <arg name="dosave_state"    default="true" />
     <arg name="path_state_est"  default="$(find ov_eval)/data/sim/state_estimate.txt" />
     <arg name="path_state_std"  default="$(find ov_eval)/data/sim/state_deviation.txt" />
     <arg name="path_state_gt"   default="$(find ov_eval)/data/sim/state_groundtruth.txt" />
+
+    <arg name="sim_end_time"    default="60.0" />
 
     <!-- ================================================================ -->
     <!-- ================================================================ -->
@@ -52,7 +70,8 @@
         <!-- SIMULATION PARAMETERS -->
         <!-- =============================================== -->
 
-        <param name="sim_traj_path"          type="str"    value="$(find ov_data)/sim/$(arg dataset)" />
+        <!-- <param name="sim_traj_path"          type="str"    value="$(find ov_data)/sim/$(arg dataset)" /> -->
+        <param name="sim_traj_path"          type="str"    value="$(arg sim_traj_path)" />
         <param name="sim_seed_state_init"    type="int"    value="0" />
         <param name="sim_seed_measurements"  type="int"    value="$(arg seed)" />
         <param name="sim_seed_preturb"       type="int"    value="$(arg seed)" />
@@ -67,6 +86,9 @@
         <param name="filepath_est"           type="str"    value="$(arg path_state_est)" />
         <param name="filepath_std"           type="str"    value="$(arg path_state_std)" />
         <param name="filepath_gt"            type="str"    value="$(arg path_state_gt)" />
+        <param name="path_est"               type="str"    value="$(arg path_est)" />
+        <param name="record_timing_information"  type="bool"   value="$(arg record_timing_information)" />  
+        <param name="record_timing_filepath"    type="str"    value="$(arg record_timing_filepath)" />
 
         <!-- =============================================== -->
         <!-- =============================================== -->
@@ -77,33 +99,49 @@
         <param name="num_opencv_threads"     type="int"    value="0" />
 
         <!-- world/filter parameters -->
-        <param name="use_fej"                   type="bool"   value="$(arg fej)" />
-        <param name="calib_cam_extrinsics"      type="bool"   value="$(arg sim_do_calibration)" />
-        <param name="calib_cam_intrinsics"      type="bool"   value="$(arg sim_do_calibration)" />
-        <param name="calib_cam_timeoffset"      type="bool"   value="$(arg sim_do_calibration)" />
+        <!-- <param name="use_fej"                   type="bool"   value="$(arg fej)" /> -->
+        <param name="calib_cam_extrinsics"      type="bool"   value="$(arg sim_calib_extrinsics)" />
+        <param name="calib_cam_intrinsics"      type="bool"   value="$(arg sim_calib_cam_intrinsics)" />
+        <param name="calib_cam_timeoffset"      type="bool"   value="$(arg sim_calib_timeoffset)" />
         <param name="calib_imu_intrinsics"      type="bool"   value="$(arg sim_do_calib_imu_intrinsics)" />
         <param name="calib_imu_g_sensitivity"   type="bool"   value="$(arg sim_do_calib_g_sensitivity)" />
-        <param name="max_clones"                type="int"    value="$(arg num_clones)" />
-        <param name="max_slam"                  type="int"    value="$(arg num_slam)" />
+
+        <param name="max_slam"                  type="int"    value="$(arg max_slam)" />
         <param name="use_stereo"                type="bool"   value="$(arg use_stereo)" />
         <param name="max_cameras"               type="int"    value="$(arg max_cameras)" />
         <param name="feat_rep_msckf"            type="string" value="$(arg feat_rep)" />
         <param name="feat_rep_slam"             type="string" value="$(arg feat_rep)" />
         <param name="feat_rep_aruco"            type="string" value="$(arg feat_rep)" />
+        <param name="integration"               type="string" value="$(arg integration)" />
+        <param name="nav_state_representation"  type="string" value="$(arg nav_state_representation)" />
 
         <!-- tracker/extractor properties -->
         <param name="num_pts"                type="int"    value="$(arg num_pts)" />
+
+        <param name="up_msckf_sigma_px"        type="double" value="$(arg sim_sigma_pix)" />
+        <param name="up_slam_sigma_px"         type="double" value="$(arg sim_sigma_pix)" />    
+        <param name="sim_end_time"          type="double" value="$(arg sim_end_time)" />
+
+        <param name="sim_do_imu_perturbation"     type="bool"   value="$(arg sim_do_imu_perturbation)" />
+        <param name="sim_seed_imu_perturb"        type="int"    value="$(arg sim_seed_imu_perturb)" />
+        <param name="sim_sigma_init_att"          type="double" value="$(arg sim_sigma_init_att)" />
+        <param name="sim_sigma_init_vel"          type="double" value="$(arg sim_sigma_init_vel)" />
+        <param name="sim_sigma_init_ba"           type="double" value="$(arg sim_sigma_init_ba)" />
+        <param name="sim_sigma_init_bg"           type="double" value="$(arg sim_sigma_init_bg)" />
+        <param name="init_scaling"                  type="double" value="$(arg init_scaling)" />
+
+        <param name="consistency_method"            type="string" value="$(arg consistency_method)" />
 
     </node>
 
 
     <!-- record the trajectory if enabled -->
     <group if="$(arg dosave_pose)">
-        <node name="recorder_estimate" pkg="ov_eval" type="pose_to_file" output="screen">
+        <!-- <node name="recorder_estimate" pkg="ov_eval" type="pose_to_file" output="screen">
             <param name="topic"      type="str" value="/ov_msckf/poseimu" />
             <param name="topic_type" type="str" value="PoseWithCovarianceStamped" />
             <param name="output"     type="str" value="$(arg path_est)" />
-        </node>
+        </node> -->
         <node name="recorder_groundtruth" pkg="ov_eval" type="pose_to_file" output="screen">
             <param name="topic"      type="str" value="/ov_msckf/posegt" />
             <param name="topic_type" type="str" value="PoseStamped" />

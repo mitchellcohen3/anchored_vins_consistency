@@ -25,6 +25,10 @@
 #include "PoseJPL.h"
 #include "utils/quat_ops.h"
 
+#include "lie_utils/SO3.h"
+#include "lie_utils/SE23.h"
+#include "StateRepresentations.h"
+
 namespace ov_type {
 
 /**
@@ -37,10 +41,10 @@ namespace ov_type {
 class IMU : public Type {
 
 public:
-  IMU() : Type(15) {
+  IMU(PoseStateRepresentation nav_state_representation = PoseStateRepresentation::DecoupledRight) : Type(15) {
 
     // Create all the sub-variables
-    _pose = std::shared_ptr<PoseJPL>(new PoseJPL());
+    _pose = std::shared_ptr<PoseJPL>(new PoseJPL(nav_state_representation));
     _v = std::shared_ptr<Vec>(new Vec(3));
     _bg = std::shared_ptr<Vec>(new Vec(3));
     _ba = std::shared_ptr<Vec>(new Vec(3));
@@ -50,6 +54,8 @@ public:
     imu0(3) = 1.0;
     set_value_internal(imu0);
     set_fej_internal(imu0);
+
+    _nav_state_representation = nav_state_representation;
   }
 
   ~IMU() {}
@@ -81,14 +87,67 @@ public:
 
     Eigen::Matrix<double, 16, 1> newX = _value;
 
-    Eigen::Matrix<double, 4, 1> dq;
-    dq << .5 * dx.block(0, 0, 3, 1), 1.0;
-    dq = ov_core::quatnorm(dq);
+    Eigen::Matrix3d C_ab = Rot().transpose();
 
-    newX.block(0, 0, 4, 1) = ov_core::quat_multiply(dq, quat());
-    newX.block(4, 0, 3, 1) += dx.block(3, 0, 3, 1);
+    // Compute updated extended pose depending on the state representation
+    Eigen::Matrix3d C_ab_new;
+    Eigen::Vector3d pos_new;
+    Eigen::Vector3d vel_new;
+    if (_nav_state_representation == PoseStateRepresentation::DecoupledRight) {
+      C_ab_new = C_ab * ov_core::SO3::expMap(dx.block<3, 1>(0, 0));
+      pos_new = pos() + dx.block<3, 1>(3, 0);
+      vel_new = vel() + dx.block<3, 1>(6, 0);
 
-    newX.block(7, 0, 3, 1) += dx.block(6, 0, 3, 1);
+      // // Original OpenVins code!
+      // Eigen::Matrix<double, 4, 1> dq;
+      // dq << .5 * dx.block(0, 0, 3, 1), 1.0;
+      // dq = ov_core::quatnorm(dq);
+
+      // newX.block(0, 0, 4, 1) = ov_core::quat_multiply(dq, quat());
+      // newX.block(4, 0, 3, 1) += dx.block(3, 0, 3, 1);
+
+      // newX.block(7, 0, 3, 1) += dx.block(6, 0, 3, 1);
+      // newX.block(10, 0, 3, 1) += dx.block(9, 0, 3, 1);
+      // newX.block(13, 0, 3, 1) += dx.block(12, 0, 3, 1);
+
+      // set_value(newX);
+      // return;
+    } else if (_nav_state_representation == PoseStateRepresentation::LieGroupLeft) {
+      // Construct SE_2(3) state
+      Eigen::Matrix<double, 5, 5> X_ab = Eigen::Matrix<double, 5, 5>::Identity();
+      X_ab.block<3, 3>(0, 0) = C_ab;
+      X_ab.block<3, 1>(0, 3) = pos();
+      X_ab.block<3, 1>(0, 4) = vel();
+
+      // Perform left multiplication
+      Eigen::Matrix<double, 5, 5> X_ab_new = ov_core::SE23::expMap(dx.block<9, 1>(0, 0)) * X_ab;
+      C_ab_new = X_ab_new.block<3, 3>(0, 0);
+      pos_new = X_ab_new.block<3, 1>(0, 3);
+      vel_new = X_ab_new.block<3, 1>(0, 4);
+    } else if (_nav_state_representation == PoseStateRepresentation::LieGroupRight) {
+      Eigen::Matrix<double, 5, 5> X_ab = Eigen::Matrix<double, 5, 5>::Identity();
+      X_ab.block<3, 3>(0, 0) = C_ab;
+      X_ab.block<3, 1>(0, 3) = pos();
+      X_ab.block<3, 1>(0, 4) = vel();
+
+      // Perform right multiplication
+      Eigen::Matrix<double, 5, 5> X_ab_new = X_ab * ov_core::SE23::expMap(dx.block<9, 1>(0, 0));
+      C_ab_new = X_ab_new.block<3, 3>(0, 0);
+      pos_new = X_ab_new.block<3, 1>(0, 3);
+      vel_new = X_ab_new.block<3, 1>(0, 4);
+    } else {
+      PRINT_ERROR("Only DecoupledRight NavStateRepresentation is currently implemented for IMU type update!");
+    }
+
+    // // Update the pose depending on the state representation
+    // Eigen::Matrix<double, 4, 1> dq;
+    // dq << .5 * dx.block(0, 0, 3, 1), 1.0;
+    // dq = ov_core::quatnorm(dq);
+
+    Eigen::Matrix<double, 4, 1> q_new = ov_core::rot_2_quat(C_ab_new.transpose());
+    newX.block(0, 0, 4, 1) = q_new;
+    newX.block(4, 0, 3, 1) = pos_new;
+    newX.block(7, 0, 3, 1) = vel_new;
     newX.block(10, 0, 3, 1) += dx.block(9, 0, 3, 1);
     newX.block(13, 0, 3, 1) += dx.block(12, 0, 3, 1);
 
@@ -183,6 +242,8 @@ public:
   /// Acceleration bias access
   std::shared_ptr<Vec> ba() { return _ba; }
 
+  PoseStateRepresentation state_rep() { return _nav_state_representation; }
+
 protected:
   /// Pose subvariable
   std::shared_ptr<PoseJPL> _pose;
@@ -195,6 +256,10 @@ protected:
 
   /// Acceleration bias subvariable
   std::shared_ptr<Vec> _ba;
+
+  // The representation of the pose state - impacts the
+  // update operation
+  PoseStateRepresentation _nav_state_representation;
 
   /**
    * @brief Sets the value of the estimate

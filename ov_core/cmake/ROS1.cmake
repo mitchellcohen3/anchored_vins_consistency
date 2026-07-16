@@ -54,10 +54,15 @@ list(APPEND LIBRARY_SOURCES
         src/feat/FeatureDatabase.cpp
         src/feat/FeatureInitializer.cpp
         src/utils/print.cpp
+
+        src/lie_utils/SO3.cpp
+        src/lie_utils/SE3.cpp
+        src/lie_utils/SE23.cpp
 )
+
 file(GLOB_RECURSE LIBRARY_HEADERS "src/*.h")
 add_library(ov_core_lib SHARED ${LIBRARY_SOURCES} ${LIBRARY_HEADERS})
-target_link_libraries(ov_core_lib ${thirdparty_libraries})
+target_link_libraries(ov_core_lib PUBLIC ${thirdparty_libraries})
 target_include_directories(ov_core_lib PUBLIC src/)
 install(TARGETS ov_core_lib
         ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

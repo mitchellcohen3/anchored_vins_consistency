@@ -27,9 +27,12 @@
 #include <atomic>
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+
+#include "utils/timer.h"
 
 #include "VioManagerOptions.h"
 
@@ -93,7 +96,7 @@ public:
    * @brief Given a state, this will initialize our IMU state.
    * @param imustate State in the MSCKF ordering: [time(sec),q_GtoI,p_IinG,v_IinG,b_gyro,b_accel]
    */
-  void initialize_with_gt(Eigen::Matrix<double, 17, 1> imustate);
+  void initialize_with_gt(Eigen::Matrix<double, 17, 1> imustate, const Eigen::Matrix<double, 15, 15> &imu_cov);
 
   /// If we are initialized or not
   bool initialized() { return is_initialized_vio && timelastupdate != -1; }
@@ -213,7 +216,7 @@ protected:
 
   // Timing statistic file and variables
   std::ofstream of_statistics;
-  boost::posix_time::ptime rT1, rT2, rT3, rT4, rT5, rT6, rT7;
+  std::map<std::string, ov_core::Timer> timers;
 
   // Track how much distance we have traveled
   double timelastupdate = -1;

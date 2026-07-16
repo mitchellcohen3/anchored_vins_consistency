@@ -143,11 +143,28 @@ bool StaticInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarianc
   // Create base covariance and its covariance ordering
   order.clear();
   order.push_back(t_imu);
-  covariance = std::pow(0.02, 2) * Eigen::MatrixXd::Identity(t_imu->size(), t_imu->size());
-  covariance.block(0, 0, 3, 3) = std::pow(0.02, 2) * Eigen::Matrix3d::Identity(); // q
-  covariance.block(3, 3, 3, 3) = std::pow(0.05, 2) * Eigen::Matrix3d::Identity(); // p
-  covariance.block(6, 6, 3, 3) = std::pow(0.01, 2) * Eigen::Matrix3d::Identity(); // v (static)
 
+  double sigma_prior_q = params.sigma_prior_q;
+  double sigma_prior_p = params.sigma_prior_p;
+  double sigma_prior_v = params.sigma_prior_v;
+  double sigma_prior_bg = params.sigma_prior_bg; 
+  double sigma_prior_ba = params.sigma_prior_ba;
+
+  // Convert covariance to correct perturbation
+  Eigen::Matrix3d R_GtoI = quat_2_Rot(q_GtoI);
+  covariance = 1e-7 * Eigen::MatrixXd::Identity(t_imu->size(), t_imu->size());
+  Eigen::Matrix3d att_cov = 1e-7 * Eigen::Matrix3d::Identity();
+  att_cov.block(0, 0, 2, 2) = std::pow(sigma_prior_q, 2) * Eigen::Matrix2d::Identity();
+
+  // Convert the orientation covariance from the global frame to the local IMU frame. 
+  covariance.block(0, 0, 3, 3) = R_GtoI * att_cov * R_GtoI.transpose(); // q
+  covariance.block(3, 3, 3, 3) = std::pow(sigma_prior_p, 2) * Eigen::Matrix3d::Identity();    // p
+  covariance.block(6, 6, 3, 3) = std::pow(sigma_prior_v, 2) * Eigen::Matrix3d::Identity();    // v (static)
+  covariance.block(9, 9, 3, 3) = std::pow(sigma_prior_bg, 2) * Eigen::Matrix3d::Identity();   // bg
+  covariance.block(12, 12, 3, 3) = std::pow(sigma_prior_ba, 2) * Eigen::Matrix3d::Identity(); // ba
+
+  PRINT_WARNING(YELLOW "[init-s]: initial sigma_q %.4f, sigma_p %.4f, sigma_v %.4f, sigma_bg %.4f, sigma_ba %.4f\n" RESET, sigma_prior_q,
+                sigma_prior_p, sigma_prior_v, sigma_prior_bg, sigma_prior_ba);
   // A VIO system has 4dof unobservable directions which can be arbitrarily picked.
   // This means that on startup, we can fix the yaw and position to be 100 percent known.
   // TODO: why can't we set these to zero and get a good NEES realworld result?
@@ -156,9 +173,6 @@ bool StaticInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarianc
   // We propagate the global orientation into the current local IMU frame
   // R_GtoI = R_GtoI*R_GtoG -> H = R_GtoI
   // Eigen::Matrix3d R_GtoI = quat_2_Rot(q_GtoI);
-  // covariance(2, 2) = std::pow(1e-4, 2);
-  // covariance.block(0, 0, 3, 3) = R_GtoI * covariance.block(0, 0, 3, 3) * R_GtoI.transpose();
-  // covariance.block(3, 3, 3, 3) = std::pow(1e-3, 2) * Eigen::Matrix3d::Identity();
 
   // Return :D
   return true;

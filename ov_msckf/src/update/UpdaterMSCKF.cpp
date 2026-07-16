@@ -187,7 +187,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
       feat.anchor_cam_id = (*it2)->anchor_cam_id;
       feat.anchor_clone_timestamp = (*it2)->anchor_clone_timestamp;
       feat.p_FinA = (*it2)->p_FinA;
-      feat.p_FinA_fej = (*it2)->p_FinA;
+      // feat.p_FinA_fej = (*it2)->p_FinA;
     } else {
       feat.p_FinG = (*it2)->p_FinG;
       feat.p_FinG_fej = (*it2)->p_FinG;

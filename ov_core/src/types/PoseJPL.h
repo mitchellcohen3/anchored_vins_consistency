@@ -24,7 +24,12 @@
 
 #include "JPLQuat.h"
 #include "Vec.h"
+
+#include "StateRepresentations.h"
+
 #include "utils/quat_ops.h"
+#include "lie_utils/SO3.h"
+#include "lie_utils/SE3.h"
 
 namespace ov_type {
 
@@ -37,7 +42,8 @@ namespace ov_type {
 class PoseJPL : public Type {
 
 public:
-  PoseJPL() : Type(6) {
+  PoseJPL(PoseStateRepresentation pose_state_representation = PoseStateRepresentation::DecoupledRight)
+      : Type(6), _pose_state_representation(pose_state_representation) {
 
     // Initialize subvariables
     _q = std::shared_ptr<JPLQuat>(new JPLQuat());
@@ -77,15 +83,55 @@ public:
 
     Eigen::Matrix<double, 7, 1> newX = _value;
 
-    Eigen::Matrix<double, 4, 1> dq;
-    dq << .5 * dx.block(0, 0, 3, 1), 1.0;
-    dq = ov_core::quatnorm(dq);
+    // Get the current rotation and position
+    Eigen::Matrix3d C_ab = Rot().transpose();
+    Eigen::Vector3d position = pos();
 
-    // Update orientation
-    newX.block(0, 0, 4, 1) = ov_core::quat_multiply(dq, quat());
+    // Compute the new rotation and position based on the chosen state representation 
+    Eigen::Matrix3d C_ab_new;
+    Eigen::Vector3d pos_new;
+    if (_pose_state_representation == PoseStateRepresentation::DecoupledRight) {
+      C_ab_new = C_ab * ov_core::SO3::expMap(dx.head<3>());
+      pos_new = position + dx.tail<3>();
 
-    // Update position
-    newX.block(4, 0, 3, 1) += dx.block(3, 0, 3, 1);
+      // NOTE: Original OpenVins code here! The original code updates
+      // updates the orientation using quaterion multiplication
+      // Eigen::Matrix<double, 4, 1> dq;
+      // dq << .5 * dx.block(0, 0, 3, 1), 1.0;
+      // dq = ov_core::quatnorm(dq);
+
+      // // Update orientation
+      // newX.block(0, 0, 4, 1) = ov_core::quat_multiply(dq, quat());
+
+      // // Update position
+      // newX.block(4, 0, 3, 1) += dx.block(3, 0, 3, 1);
+
+      // set_value(newX);
+      // return;
+    } else if (_pose_state_representation == PoseStateRepresentation::LieGroupLeft) {
+      // PRINT_WARNING(YELLOW "Lie group left pose representation entered for PoseJPL update.\n" RESET);
+      Eigen::Matrix4d T_ab = Eigen::Matrix4d::Identity();
+      T_ab.block<3, 3>(0, 0) = C_ab;
+      T_ab.block<3, 1>(0, 3) = position;
+      // Perform left multiplication
+      Eigen::Matrix4d T_ab_new = ov_core::SE3::expMap(dx) * T_ab;
+      C_ab_new = T_ab_new.block<3, 3>(0, 0);
+      pos_new = T_ab_new.block<3, 1>(0, 3);
+    } else if (_pose_state_representation == PoseStateRepresentation::LieGroupRight) {
+      Eigen::Matrix4d T_ab = Eigen::Matrix4d::Identity();
+      T_ab.block<3, 3>(0, 0) = C_ab;
+      T_ab.block<3, 1>(0, 3) = position;
+      // Perform right multiplication
+      Eigen::Matrix4d T_ab_new = T_ab * ov_core::SE3::expMap(dx);
+      C_ab_new = T_ab_new.block<3, 3>(0, 0);
+      pos_new = T_ab_new.block<3, 1>(0, 3);
+    } else {
+      PRINT_ERROR("PoseJPL::update: Unsupported pose state representation!");
+    }
+
+    // Update the orientation and position
+    newX.block<4, 1>(0, 0) = ov_core::rot_2_quat(C_ab_new.transpose());
+    newX.block<3, 1>(4, 0) = pos_new;
 
     set_value(newX);
   }
@@ -103,7 +149,7 @@ public:
   void set_fej(const Eigen::MatrixXd &new_value) override { set_fej_internal(new_value); }
 
   std::shared_ptr<Type> clone() override {
-    auto Clone = std::shared_ptr<PoseJPL>(new PoseJPL());
+    auto Clone = std::shared_ptr<PoseJPL>(new PoseJPL(_pose_state_representation));
     Clone->set_value(value());
     Clone->set_fej(fej());
     return Clone;
@@ -141,6 +187,9 @@ public:
 
   // Position type access
   std::shared_ptr<Vec> p() { return _p; }
+
+  // Returns the representation of the pose state
+  PoseStateRepresentation state_rep() { return _pose_state_representation; }
 
 protected:
   /// Subvariable containing orientation
@@ -184,6 +233,9 @@ protected:
 
     _fej = new_value;
   }
+
+protected:
+  PoseStateRepresentation _pose_state_representation;
 };
 
 } // namespace ov_type

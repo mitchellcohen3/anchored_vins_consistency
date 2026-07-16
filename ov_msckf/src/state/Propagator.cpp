@@ -26,6 +26,8 @@
 #include "utils/print.h"
 #include "utils/quat_ops.h"
 
+#include "lie_utils/SO3.h"
+
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
@@ -431,7 +433,8 @@ void Propagator::predict_and_compute(std::shared_ptr<State> state, const ov_core
   // Pre-compute some analytical values for the mean and covariance integration
   Eigen::Matrix<double, 3, 18> Xi_sum = Eigen::Matrix<double, 3, 18>::Zero(3, 18);
   if (state->_options.integration_method == StateOptions::IntegrationMethod::RK4 ||
-      state->_options.integration_method == StateOptions::IntegrationMethod::ANALYTICAL) {
+      state->_options.integration_method == StateOptions::IntegrationMethod::ANALYTICAL ||
+      state->_options.integration_method == StateOptions::IntegrationMethod::CONTINUOUS) {
     compute_Xi_sum(state, dt, w_hat_avg, a_hat_avg, Xi_sum);
   }
 
@@ -442,32 +445,45 @@ void Propagator::predict_and_compute(std::shared_ptr<State> state, const ov_core
     predict_mean_analytic(state, dt, w_hat_avg, a_hat_avg, new_q, new_v, new_p, Xi_sum);
   } else if (state->_options.integration_method == StateOptions::IntegrationMethod::RK4) {
     predict_mean_rk4(state, dt, w_hat1, a_hat1, w_hat2, a_hat2, new_q, new_v, new_p);
+  } else if (state->_options.integration_method == StateOptions::IntegrationMethod::CONTINUOUS) {
+    predict_mean_analytic(state, dt, w_hat_avg, a_hat_avg, new_q, new_v, new_p, Xi_sum);
   } else {
     predict_mean_discrete(state, dt, w_hat_avg, a_hat_avg, new_q, new_v, new_p);
-  }
-
-  // Allocate state transition and continuous-time noise Jacobian
-  F = Eigen::MatrixXd::Zero(state->imu_intrinsic_size() + 15, state->imu_intrinsic_size() + 15);
-  Eigen::MatrixXd G = Eigen::MatrixXd::Zero(state->imu_intrinsic_size() + 15, 12);
-  if (state->_options.integration_method == StateOptions::IntegrationMethod::RK4 ||
-      state->_options.integration_method == StateOptions::IntegrationMethod::ANALYTICAL) {
-    compute_F_and_G_analytic(state, dt, w_hat_avg, a_hat_avg, w_uncorrected, a_uncorrected, new_q, new_v, new_p, Xi_sum, F, G);
-  } else {
-    compute_F_and_G_discrete(state, dt, w_hat_avg, a_hat_avg, w_uncorrected, a_uncorrected, new_q, new_v, new_p, F, G);
   }
 
   // Construct our discrete noise covariance matrix
   // Note that we need to convert our continuous time noises to discrete
   // Equations (129) amd (130) of Trawny tech report
-  Eigen::Matrix<double, 12, 12> Qc = Eigen::Matrix<double, 12, 12>::Zero();
-  Qc.block(0, 0, 3, 3) = std::pow(_noises.sigma_w, 2) / dt * Eigen::Matrix3d::Identity();
-  Qc.block(3, 3, 3, 3) = std::pow(_noises.sigma_a, 2) / dt * Eigen::Matrix3d::Identity();
-  Qc.block(6, 6, 3, 3) = std::pow(_noises.sigma_wb, 2) / dt * Eigen::Matrix3d::Identity();
-  Qc.block(9, 9, 3, 3) = std::pow(_noises.sigma_ab, 2) / dt * Eigen::Matrix3d::Identity();
+  Eigen::Matrix<double, 12, 12> Q_k = Eigen::Matrix<double, 12, 12>::Zero();
+  Q_k.block(0, 0, 3, 3) = std::pow(_noises.sigma_w, 2) / dt * Eigen::Matrix3d::Identity();
+  Q_k.block(3, 3, 3, 3) = std::pow(_noises.sigma_a, 2) / dt * Eigen::Matrix3d::Identity();
+  Q_k.block(6, 6, 3, 3) = std::pow(_noises.sigma_wb, 2) / dt * Eigen::Matrix3d::Identity();
+  Q_k.block(9, 9, 3, 3) = std::pow(_noises.sigma_ab, 2) / dt * Eigen::Matrix3d::Identity();
 
-  // Compute the noise injected into the state over the interval
+  // Allocate state transition and continuous-time noise Jacobian
+  F = Eigen::MatrixXd::Zero(state->imu_intrinsic_size() + 15, state->imu_intrinsic_size() + 15);
   Qd = Eigen::MatrixXd::Zero(state->imu_intrinsic_size() + 15, state->imu_intrinsic_size() + 15);
-  Qd = G * Qc * G.transpose();
+  Eigen::MatrixXd G = Eigen::MatrixXd::Zero(state->imu_intrinsic_size() + 15, 12);
+  if (state->_options.integration_method == StateOptions::IntegrationMethod::RK4 ||
+      state->_options.integration_method == StateOptions::IntegrationMethod::ANALYTICAL) {
+    compute_F_and_G_analytic(state, dt, w_hat_avg, a_hat_avg, w_uncorrected, a_uncorrected, new_q, new_v, new_p, Xi_sum, F, G);
+    Qd = G * Q_k * G.transpose();
+  } else if (state->_options.integration_method == StateOptions::IntegrationMethod::DISCRETE) {
+    compute_F_and_G_discrete(state, dt, w_hat_avg, a_hat_avg, w_uncorrected, a_uncorrected, new_q, new_v, new_p, F, G);
+    Qd = G * Q_k * G.transpose();
+  } else if (state->_options.integration_method == StateOptions::IntegrationMethod::CONTINUOUS) {
+    PRINT_WARNING("Using continuous-time covariance propagation, shouldn't hit here...\n");
+    // For now, we do not support IMU intrionsics with continuous-time propagation
+    if (state->imu_intrinsic_size() != 0) {
+      PRINT_ERROR("Warning: IMU intrinsic estimation not supported with right-invariant error!");
+    }
+    // PRINT_DEBUG("Using continuous-time covariance propagation for Lie Group integration.");
+    compute_F_and_Qd_continuous(state, dt, w_hat_avg, a_hat_avg, F, Qd);
+  } else {
+    PRINT_ERROR("Unknown integration method selected for IMU propagation!");
+  }
+
+  // Make symmetric
   Qd = 0.5 * (Qd + Qd.transpose());
 
   // Now replace imu estimate and fej with propagated values
@@ -477,6 +493,57 @@ void Propagator::predict_and_compute(std::shared_ptr<State> state, const ov_core
   imu_x.block(7, 0, 3, 1) = new_v;
   state->_imu->set_value(imu_x);
   state->_imu->set_fej(imu_x);
+}
+
+void Propagator::predict_mean_lie_group(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat, const Eigen::Vector3d &a_hat,
+                                        Eigen::Vector4d &new_q, Eigen::Vector3d &new_v, Eigen::Vector3d &new_p) {
+  // Write the propagation as a prodct of three SE_2(3) matrices: Gamma_k * Phi_k * Upsilon_k
+
+  // Let's let our navigation state
+  Eigen::Matrix3d C_ab = state->_imu->Rot().transpose();
+  Eigen::Matrix<double, 5, 5> T_k = Eigen::Matrix<double, 5, 5>::Identity();
+  T_k.block<3, 3>(0, 0) = C_ab;
+  T_k.block<3, 1>(0, 3) = state->_imu->vel();
+  T_k.block<3, 1>(0, 4) = state->_imu->pos();
+
+  // Compute Phi_k
+  Eigen::Matrix<double, 5, 5> Phi_k = Eigen::Matrix<double, 5, 5>::Identity();
+  Phi_k.block<3, 3>(0, 0) = C_ab;
+  Phi_k.block<3, 1>(0, 3) = state->_imu->vel();
+  Phi_k.block<3, 1>(0, 4) = state->_imu->pos() + dt * state->_imu->vel();
+
+  // Compute Upsilon_k
+  Eigen::Matrix<double, 5, 5> Upsilon_k = Eigen::Matrix<double, 5, 5>::Identity();
+  Eigen::Matrix3d delta_C = SO3::expMap(w_hat * dt);
+  Eigen::Matrix3d Psi_2;
+  compute_psi_matrix(dt * w_hat, Psi_2);
+  Upsilon_k.block<3, 3>(0, 0) = delta_C;
+  Upsilon_k.block<3, 1>(0, 3) = dt * SO3::leftJacobian(w_hat * dt) * a_hat;
+  Upsilon_k.block<3, 1>(0, 4) = dt * dt * Psi_2 * a_hat;
+
+  // Compute Gamma_k
+  Eigen::Matrix<double, 5, 5> Gamma_k = Eigen::Matrix<double, 5, 5>::Identity();
+  Gamma_k.block<3, 1>(0, 3) = -_gravity * dt;
+  Gamma_k.block<3, 1>(0, 4) = -0.5 * _gravity * dt * dt;
+
+  Eigen::Matrix<double, 5, 5> T_kp1 = Gamma_k * Phi_k * Upsilon_k;
+
+  // Extract the new quaternion, velocity, and position
+  new_q = rot_2_quat(T_kp1.block<3, 3>(0, 0).transpose());
+  new_v = T_kp1.block<3, 1>(0, 3);
+  new_p = T_kp1.block<3, 1>(0, 4);
+}
+
+void Propagator::compute_psi_matrix(const Eigen::Vector3d &omega, Eigen::Matrix3d &psiMatrix) {
+  if (omega.norm() < 1e-8) {
+    psiMatrix = 0.5 * Eigen::Matrix3d::Identity();
+  } else {
+    double phi = omega.norm();
+    Eigen::Matrix3d a_cross = SO3::cross(omega);
+    double s = (phi - sin(phi)) / (phi * phi * phi);
+    double c = (phi * phi + 2 * cos(phi) - 2) / (2 * phi * phi * phi * phi);
+    psiMatrix = 0.5 * Eigen::Matrix3d::Identity() + s * a_cross + c * a_cross * a_cross;
+  }
 }
 
 void Propagator::predict_mean_discrete(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat, const Eigen::Vector3d &a_hat,
@@ -728,12 +795,17 @@ void Propagator::compute_F_and_G_analytic(std::shared_ptr<State> state, double d
   Eigen::Matrix3d R_k = state->_imu->Rot();
   Eigen::Vector3d v_k = state->_imu->vel();
   Eigen::Vector3d p_k = state->_imu->pos();
-  if (state->_options.do_fej) {
+
+  // If we should do FEJ, then we need to use FEJ values for the current state
+  if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+    // PRINT_DEBUG("Using FEJ for analytic F computation.\n");
     R_k = state->_imu->Rot_fej();
     v_k = state->_imu->vel_fej();
     p_k = state->_imu->pos_fej();
   }
+
   Eigen::Matrix3d dR_ktok1 = quat_2_Rot(new_q) * R_k.transpose();
+  Eigen::Matrix3d R_k1toG = quat_2_Rot(new_q).transpose();
 
   Eigen::Matrix3d Dw = State::Dm(state->_options.imu_model, state->_calib_imu_dw->value());
   Eigen::Matrix3d Da = State::Dm(state->_options.imu_model, state->_calib_imu_da->value());
@@ -749,82 +821,133 @@ void Propagator::compute_F_and_G_analytic(std::shared_ptr<State> state, double d
   Eigen::Matrix3d Xi_3 = Xi_sum.block(0, 12, 3, 3);
   Eigen::Matrix3d Xi_4 = Xi_sum.block(0, 15, 3, 3);
 
-  // for th
-  F.block(th_id, th_id, 3, 3) = dR_ktok1;
-  F.block(p_id, th_id, 3, 3) = -skew_x(new_p - p_k - v_k * dt + 0.5 * _gravity * dt * dt) * R_k.transpose();
-  F.block(v_id, th_id, 3, 3) = -skew_x(new_v - v_k + _gravity * dt) * R_k.transpose();
+  // Original code for SO(3) x R^6 representation
+  if (state->_options.nav_state_representation == PoseStateRepresentation::DecoupledRight) { 
+    // for th
+    F.block(th_id, th_id, 3, 3) = dR_ktok1;
+    F.block(p_id, th_id, 3, 3) = -skew_x(new_p - p_k - v_k * dt + 0.5 * _gravity * dt * dt) * R_k.transpose();
+    F.block(v_id, th_id, 3, 3) = -skew_x(new_v - v_k + _gravity * dt) * R_k.transpose();
 
-  // for p
-  F.block(p_id, p_id, 3, 3).setIdentity();
+    // for p
+    F.block(p_id, p_id, 3, 3).setIdentity();
 
-  // for v
-  F.block(p_id, v_id, 3, 3) = Eigen::Matrix3d::Identity() * dt;
-  F.block(v_id, v_id, 3, 3).setIdentity();
+    // for v
+    F.block(p_id, v_id, 3, 3) = Eigen::Matrix3d::Identity() * dt;
+    F.block(v_id, v_id, 3, 3).setIdentity();
 
-  // for bg
-  F.block(th_id, bg_id, 3, 3) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw;
-  F.block(p_id, bg_id, 3, 3) = R_k.transpose() * Xi_4 * R_wtoI * Dw;
-  F.block(v_id, bg_id, 3, 3) = R_k.transpose() * Xi_3 * R_wtoI * Dw;
-  F.block(bg_id, bg_id, 3, 3).setIdentity();
+    // for bg
+    F.block(th_id, bg_id, 3, 3) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw;
+    F.block(p_id, bg_id, 3, 3) = R_k.transpose() * Xi_4 * R_wtoI * Dw;
+    F.block(v_id, bg_id, 3, 3) = R_k.transpose() * Xi_3 * R_wtoI * Dw;
+    F.block(bg_id, bg_id, 3, 3).setIdentity();
 
-  // for ba
-  F.block(th_id, ba_id, 3, 3) = dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * R_atoI * Da;
-  F.block(p_id, ba_id, 3, 3) = -R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * R_atoI * Da;
-  F.block(v_id, ba_id, 3, 3) = -R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * R_atoI * Da;
-  F.block(ba_id, ba_id, 3, 3).setIdentity();
+    // for ba
+    F.block(th_id, ba_id, 3, 3) = dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * R_atoI * Da;
+    F.block(p_id, ba_id, 3, 3) = -R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * R_atoI * Da;
+    F.block(v_id, ba_id, 3, 3) = -R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * R_atoI * Da;
+    F.block(ba_id, ba_id, 3, 3).setIdentity();
 
-  // begin to add the state transition matrix for the omega intrinsics Dw part
-  if (Dw_id != -1) {
-    Eigen::MatrixXd H_Dw = compute_H_Dw(state, w_uncorrected);
-    F.block(th_id, Dw_id, 3, state->_calib_imu_dw->size()) = dR_ktok1 * Jr_ktok1 * dt * R_wtoI * H_Dw;
-    F.block(p_id, Dw_id, 3, state->_calib_imu_dw->size()) = -R_k.transpose() * Xi_4 * R_wtoI * H_Dw;
-    F.block(v_id, Dw_id, 3, state->_calib_imu_dw->size()) = -R_k.transpose() * Xi_3 * R_wtoI * H_Dw;
-    F.block(Dw_id, Dw_id, state->_calib_imu_dw->size(), state->_calib_imu_dw->size()).setIdentity();
+    // begin to add the state transition matrix for the omega intrinsics Dw part
+    if (Dw_id != -1) {
+      Eigen::MatrixXd H_Dw = compute_H_Dw(state, w_uncorrected);
+      F.block(th_id, Dw_id, 3, state->_calib_imu_dw->size()) = dR_ktok1 * Jr_ktok1 * dt * R_wtoI * H_Dw;
+      F.block(p_id, Dw_id, 3, state->_calib_imu_dw->size()) = -R_k.transpose() * Xi_4 * R_wtoI * H_Dw;
+      F.block(v_id, Dw_id, 3, state->_calib_imu_dw->size()) = -R_k.transpose() * Xi_3 * R_wtoI * H_Dw;
+      F.block(Dw_id, Dw_id, state->_calib_imu_dw->size(), state->_calib_imu_dw->size()).setIdentity();
+    }
+
+    // begin to add the state transition matrix for the acc intrinsics Da part
+    if (Da_id != -1) {
+      Eigen::MatrixXd H_Da = compute_H_Da(state, a_uncorrected);
+      F.block(th_id, Da_id, 3, state->_calib_imu_da->size()) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * R_atoI * H_Da;
+      F.block(p_id, Da_id, 3, state->_calib_imu_da->size()) = R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * R_atoI * H_Da;
+      F.block(v_id, Da_id, 3, state->_calib_imu_da->size()) = R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * R_atoI * H_Da;
+      F.block(Da_id, Da_id, state->_calib_imu_da->size(), state->_calib_imu_da->size()).setIdentity();
+    }
+
+    // add the state transition matrix of the Tg part
+    if (Tg_id != -1) {
+      Eigen::MatrixXd H_Tg = compute_H_Tg(state, a_k);
+      F.block(th_id, Tg_id, 3, state->_calib_imu_tg->size()) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * H_Tg;
+      F.block(p_id, Tg_id, 3, state->_calib_imu_tg->size()) = R_k.transpose() * Xi_4 * R_wtoI * Dw * H_Tg;
+      F.block(v_id, Tg_id, 3, state->_calib_imu_tg->size()) = R_k.transpose() * Xi_3 * R_wtoI * Dw * H_Tg;
+      F.block(Tg_id, Tg_id, state->_calib_imu_tg->size(), state->_calib_imu_tg->size()).setIdentity();
+    }
+
+    // begin to add the state transition matrix for the R_ACCtoIMU part
+    if (th_atoI_id != -1) {
+      F.block(th_id, th_atoI_id, 3, 3) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * ov_core::skew_x(a_k);
+      F.block(p_id, th_atoI_id, 3, 3) = R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * ov_core::skew_x(a_k);
+      F.block(v_id, th_atoI_id, 3, 3) = R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * ov_core::skew_x(a_k);
+      F.block(th_atoI_id, th_atoI_id, 3, 3).setIdentity();
+    }
+
+    // begin to add the state transition matrix for the R_GYROtoIMU part
+    if (th_wtoI_id != -1) {
+      F.block(th_id, th_wtoI_id, 3, 3) = dR_ktok1 * Jr_ktok1 * dt * ov_core::skew_x(w_k);
+      F.block(p_id, th_wtoI_id, 3, 3) = -R_k.transpose() * Xi_4 * ov_core::skew_x(w_k);
+      F.block(v_id, th_wtoI_id, 3, 3) = -R_k.transpose() * Xi_3 * ov_core::skew_x(w_k);
+      F.block(th_wtoI_id, th_wtoI_id, 3, 3).setIdentity();
+    }
+
+    // construct the G part
+    G.block(th_id, 0, 3, 3) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw;
+    G.block(p_id, 0, 3, 3) = R_k.transpose() * Xi_4 * R_wtoI * Dw;
+    G.block(v_id, 0, 3, 3) = R_k.transpose() * Xi_3 * R_wtoI * Dw;
+    G.block(th_id, 3, 3, 3) = dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * R_atoI * Da;
+    G.block(p_id, 3, 3, 3) = -R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * R_atoI * Da;
+    G.block(v_id, 3, 3, 3) = -R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * R_atoI * Da;
+    G.block(bg_id, 6, 3, 3) = dt * Eigen::Matrix3d::Identity();
+    G.block(ba_id, 9, 3, 3) = dt * Eigen::Matrix3d::Identity();
+  } else if (state->_options.nav_state_representation == PoseStateRepresentation::LieGroupLeft) {
+    PRINT_INFO("Using Lie Group Left state representation for analytic IMU propagation F and G computation.\n");
+
+    // State transition matrix for right-invariant IMU error, see Equations (95)-(97) of 
+    // Supplementary Materials: Decoupled Right Invariant Error States For Consistent Visual-Inertial Navigation, 
+    // Yang, Yulin, et al., 2021
+    // (https://yangyulin.net/papers/2021_supp_DRI.pdf)
+
+    // theta row
+    F.block(th_id, th_id, 3, 3).setIdentity();
+    F.block(th_id, bg_id, 3, 3) = -R_k1toG * SO3::rightJacobian(w_hat * dt) * dt;
+
+    // Position row
+    F.block(p_id, th_id, 3, 3) = 0.5 * ov_core::skew_x(-_gravity) * dt * dt;
+    F.block(p_id, p_id, 3, 3).setIdentity();
+    F.block(p_id, v_id, 3, 3) = Eigen::Matrix3d::Identity() * dt;
+    F.block(p_id, bg_id, 3, 3) = -ov_core::skew_x(new_p) * R_k1toG * SO3::rightJacobian(w_hat * dt) * dt + R_k.transpose() * Xi_4;
+    F.block(p_id, ba_id, 3, 3) = -R_k.transpose() * Xi_2;
+
+    // Velocity row
+    F.block(v_id, th_id, 3, 3) = ov_core::skew_x(-_gravity) * dt;
+    F.block(v_id, v_id, 3, 3).setIdentity();
+    F.block(v_id, bg_id, 3, 3) = -ov_core::skew_x(new_v) * R_k1toG * SO3::rightJacobian(w_hat * dt) * dt + R_k.transpose() * Xi_3;
+    F.block(v_id, ba_id, 3, 3) = -R_k.transpose() * Xi_1;
+
+    // Biases
+    F.block(bg_id, bg_id, 3, 3).setIdentity();
+    F.block(ba_id, ba_id, 3, 3).setIdentity();
+
+    // Noise matrix - see equations (98)-(100) of the DRI tech report
+    G.block(th_id, 0, 3, 3) = -R_k1toG * SO3::rightJacobian(w_hat * dt) * dt;
+    G.block(p_id, 0, 3, 3) = -ov_core::skew_x(new_p) * R_k1toG * SO3::rightJacobian(w_hat * dt) * dt + R_k.transpose() * Xi_4;
+    G.block(p_id, 3, 3, 3) = -R_k.transpose() * Xi_2;
+    G.block(v_id, 0, 3, 3) = -ov_core::skew_x(new_v) * R_k1toG * SO3::rightJacobian(w_hat * dt) * dt + R_k.transpose() * Xi_3;
+    G.block(v_id, 3, 3, 3) = -R_k.transpose() * Xi_1;
+
+    // Check to make sure that f.block(0, bg_id, 9, 6) is the same as G.block(0, 0, 9, 6)
+    Eigen::MatrixXd F_bg = F.block(0, bg_id, 9, 6);
+    Eigen::MatrixXd G_0 = G.block(0, 0, 9, 6);
+    if (!F_bg.isApprox(G_0, 1e-9)) {
+      PRINT_ERROR("Discrepancy between F and G matrices in analytic IMU propagation.\n");
+    }
+
+    G.block(bg_id, 6, 3, 3) = dt * Eigen::Matrix3d::Identity();
+    G.block(ba_id, 9, 3, 3) = dt * Eigen::Matrix3d::Identity();
+  } else {
+    PRINT_ERROR("Unsupported state representation for analytic IMU propagation.");
+    std::exit(EXIT_FAILURE);
   }
-
-  // begin to add the state transition matrix for the acc intrinsics Da part
-  if (Da_id != -1) {
-    Eigen::MatrixXd H_Da = compute_H_Da(state, a_uncorrected);
-    F.block(th_id, Da_id, 3, state->_calib_imu_da->size()) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * R_atoI * H_Da;
-    F.block(p_id, Da_id, 3, state->_calib_imu_da->size()) = R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * R_atoI * H_Da;
-    F.block(v_id, Da_id, 3, state->_calib_imu_da->size()) = R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * R_atoI * H_Da;
-    F.block(Da_id, Da_id, state->_calib_imu_da->size(), state->_calib_imu_da->size()).setIdentity();
-  }
-
-  // add the state transition matrix of the Tg part
-  if (Tg_id != -1) {
-    Eigen::MatrixXd H_Tg = compute_H_Tg(state, a_k);
-    F.block(th_id, Tg_id, 3, state->_calib_imu_tg->size()) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * H_Tg;
-    F.block(p_id, Tg_id, 3, state->_calib_imu_tg->size()) = R_k.transpose() * Xi_4 * R_wtoI * Dw * H_Tg;
-    F.block(v_id, Tg_id, 3, state->_calib_imu_tg->size()) = R_k.transpose() * Xi_3 * R_wtoI * Dw * H_Tg;
-    F.block(Tg_id, Tg_id, state->_calib_imu_tg->size(), state->_calib_imu_tg->size()).setIdentity();
-  }
-
-  // begin to add the state transition matrix for the R_ACCtoIMU part
-  if (th_atoI_id != -1) {
-    F.block(th_id, th_atoI_id, 3, 3) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * ov_core::skew_x(a_k);
-    F.block(p_id, th_atoI_id, 3, 3) = R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * ov_core::skew_x(a_k);
-    F.block(v_id, th_atoI_id, 3, 3) = R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * ov_core::skew_x(a_k);
-    F.block(th_atoI_id, th_atoI_id, 3, 3).setIdentity();
-  }
-
-  // begin to add the state transition matrix for the R_GYROtoIMU part
-  if (th_wtoI_id != -1) {
-    F.block(th_id, th_wtoI_id, 3, 3) = dR_ktok1 * Jr_ktok1 * dt * ov_core::skew_x(w_k);
-    F.block(p_id, th_wtoI_id, 3, 3) = -R_k.transpose() * Xi_4 * ov_core::skew_x(w_k);
-    F.block(v_id, th_wtoI_id, 3, 3) = -R_k.transpose() * Xi_3 * ov_core::skew_x(w_k);
-    F.block(th_wtoI_id, th_wtoI_id, 3, 3).setIdentity();
-  }
-
-  // construct the G part
-  G.block(th_id, 0, 3, 3) = -dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw;
-  G.block(p_id, 0, 3, 3) = R_k.transpose() * Xi_4 * R_wtoI * Dw;
-  G.block(v_id, 0, 3, 3) = R_k.transpose() * Xi_3 * R_wtoI * Dw;
-  G.block(th_id, 3, 3, 3) = dR_ktok1 * Jr_ktok1 * dt * R_wtoI * Dw * Tg * R_atoI * Da;
-  G.block(p_id, 3, 3, 3) = -R_k.transpose() * (Xi_2 + Xi_4 * R_wtoI * Dw * Tg) * R_atoI * Da;
-  G.block(v_id, 3, 3, 3) = -R_k.transpose() * (Xi_1 + Xi_3 * R_wtoI * Dw * Tg) * R_atoI * Da;
-  G.block(bg_id, 6, 3, 3) = dt * Eigen::Matrix3d::Identity();
-  G.block(ba_id, 9, 3, 3) = dt * Eigen::Matrix3d::Identity();
 }
 
 void Propagator::compute_F_and_G_discrete(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat,
@@ -874,7 +997,9 @@ void Propagator::compute_F_and_G_discrete(std::shared_ptr<State> state, double d
   Eigen::Matrix3d R_k = state->_imu->Rot();
   Eigen::Vector3d v_k = state->_imu->vel();
   Eigen::Vector3d p_k = state->_imu->pos();
-  if (state->_options.do_fej) {
+
+  if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+    // PRINT_DEBUG("Using FEJ for discrete F computation.\n");
     R_k = state->_imu->Rot_fej();
     v_k = state->_imu->vel_fej();
     p_k = state->_imu->pos_fej();
@@ -959,6 +1084,103 @@ void Propagator::compute_F_and_G_discrete(std::shared_ptr<State> state, double d
   G.block(p_id, 3, 3, 3) = -0.5 * R_k.transpose() * dt * dt * R_atoI * Da;
   G.block(bg_id, 6, 3, 3) = dt * Eigen::Matrix3d::Identity();
   G.block(ba_id, 9, 3, 3) = dt * Eigen::Matrix3d::Identity();
+}
+
+void Propagator::compute_F_and_Qd_continuous(std::shared_ptr<State> state, double dt, const Eigen::Vector3d &w_hat,
+                                             const Eigen::Vector3d &a_hat, Eigen::MatrixXd &F, Eigen::MatrixXd &Qd) {
+  // Ensure that the input matrices are the correct sizes
+  if (F.rows() != 15 || F.cols() != 15) {
+    PRINT_ERROR("Jacobian is not of the expected size!");
+  }
+
+  if (Qd.rows() != 15 || Qd.cols() != 15) {
+    PRINT_ERROR("Discrete covariance matrix is not of the expected size!");
+  }
+
+  Eigen::Matrix3d C_ab = state->_imu->Rot().transpose();
+  Eigen::Vector3d v = state->_imu->vel();
+  Eigen::Vector3d r = state->_imu->pos();
+
+  if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+    // PRINT_DEBUG("Using FEJ state for continuous F and Qd computation.");
+    C_ab = state->_imu->Rot_fej().transpose();
+    v = state->_imu->vel_fej();
+    r = state->_imu->pos_fej();
+  }
+
+  // Our state ordering - att, pos, vel, bg, ba
+  int O_A = 0;
+  int O_P = 3;
+  int O_V = 6;
+  int O_BG = 9;
+  int O_BA = 12;
+
+  Eigen::Matrix<double, 15, 15> F_ct = Eigen::Matrix<double, 15, 15>::Zero();
+  Eigen::Matrix<double, 15, 12> L_ct = Eigen::Matrix<double, 15, 12>::Zero();
+  if (state->_imu->state_rep() == ov_type::PoseStateRepresentation::DecoupledRight) {
+    F_ct.block<3, 3>(O_A, O_A) = -SO3::cross(w_hat);
+    F_ct.block<3, 3>(O_A, O_BG) = -Eigen::Matrix3d::Identity();
+    F_ct.block<3, 3>(O_V, O_A) = -C_ab * SO3::cross(a_hat);
+    F_ct.block<3, 3>(O_V, O_BA) = -C_ab;
+    F_ct.block<3, 3>(O_P, O_V) = Eigen::Matrix3d::Identity();
+
+    L_ct.block<3, 3>(O_A, 0) = Eigen::Matrix3d::Identity();
+    L_ct.block<3, 3>(O_V, 3) = C_ab;
+    L_ct.block<3, 3>(O_BG, 6) = Eigen::Matrix3d::Identity();
+    L_ct.block<3, 3>(O_BA, 9) = Eigen::Matrix3d::Identity();
+  } else if (state->_imu->state_rep() == ov_type::PoseStateRepresentation::LieGroupLeft) {
+    F_ct.block<3, 3>(O_A, O_BG) = -C_ab;
+    F_ct.block<3, 3>(O_V, O_A) = SO3::cross(-_gravity);
+    F_ct.block<3, 3>(O_V, O_BG) = -SO3::cross(v) * C_ab;
+    F_ct.block<3, 3>(O_V, O_BA) = -C_ab;
+    F_ct.block<3, 3>(O_P, O_V) = Eigen::Matrix3d::Identity();
+    F_ct.block<3, 3>(O_P, O_BG) = -SO3::cross(r) * C_ab;
+
+    L_ct.block<3, 3>(O_A, 0) = C_ab;
+    L_ct.block<3, 3>(O_V, 0) = SO3::cross(v) * C_ab;
+    L_ct.block<3, 3>(O_V, 3) = C_ab;
+    L_ct.block<3, 3>(O_P, 3) = SO3::cross(r) * C_ab;
+    L_ct.block<3, 3>(O_BG, 6) = Eigen::Matrix3d::Identity();
+    L_ct.block<3, 3>(O_BA, 9) = Eigen::Matrix3d::Identity();
+  } else if (state->_imu->state_rep() == ov_type::PoseStateRepresentation::LieGroupRight) {
+    F_ct.block<3, 3>(O_A, O_A) = -SO3::cross(w_hat);
+    F_ct.block<3, 3>(O_A, O_BG) = -Eigen::Matrix3d::Identity();
+    F_ct.block<3, 3>(O_V, O_A) = -SO3::cross(a_hat);
+    F_ct.block<3, 3>(O_V, O_V) = -SO3::cross(w_hat);
+    F_ct.block<3, 3>(O_V, O_BA) = -Eigen::Matrix3d::Identity();
+    F_ct.block<3, 3>(O_P, O_V) = Eigen::Matrix3d::Identity();
+    F_ct.block<3, 3>(O_P, O_P) = -SO3::cross(w_hat);
+
+    L_ct.block<3, 3>(O_A, 0) = Eigen::Matrix3d::Identity();
+    L_ct.block<3, 3>(O_V, 3) = Eigen::Matrix3d::Identity();
+    L_ct.block<3, 3>(O_BG, 6) = Eigen::Matrix3d::Identity();
+    L_ct.block<3, 3>(O_BA, 9) = Eigen::Matrix3d::Identity();
+  } else {
+    PRINT_ERROR("Unsupported pose state representation!");
+  }
+
+  // Discretize the continuous-time Jacobians
+  Eigen::Matrix<double, 12, 12> Q_ct = Eigen::Matrix<double, 12, 12>::Zero();
+  Q_ct.block(0, 0, 3, 3) = std::pow(_noises.sigma_w, 2) * Eigen::Matrix3d::Identity();
+  Q_ct.block(3, 3, 3, 3) = std::pow(_noises.sigma_a, 2) * Eigen::Matrix3d::Identity();
+  Q_ct.block(6, 6, 3, 3) = std::pow(_noises.sigma_wb, 2) * Eigen::Matrix3d::Identity();
+  Q_ct.block(9, 9, 3, 3) = std::pow(_noises.sigma_ab, 2) * Eigen::Matrix3d::Identity();
+
+  // Discretize the system
+  Eigen::MatrixXd A_dt = F_ct * dt;
+  Eigen::MatrixXd A_dt_square = A_dt * A_dt;
+  Eigen::MatrixXd A_dt_cube = A_dt_square * A_dt;
+
+  F = Eigen::MatrixXd::Identity(F_ct.rows(), F_ct.cols()) + A_dt + 0.5 * A_dt_square + (1.0 / 6.0) * A_dt_cube;
+
+  // Compute the discrete-time noise covariance
+  // if (method == ceres_nav::DiscretizationMethod::TaylorSeries) {
+  Eigen::Matrix<double, 15, 15> Q = L_ct * Q_ct * L_ct.transpose();
+  Eigen::Matrix<double, 15, 15> first_term = Q * dt;
+  Eigen::Matrix<double, 15, 15> second_term = (F_ct * Q + Q * F_ct.transpose()) * (dt * dt) / 2.0;
+  Eigen::Matrix<double, 15, 15> third_term =
+      (F_ct * F_ct * Q + 2.0 * F_ct * Q * F_ct.transpose() + Q * F_ct.transpose() * F_ct.transpose()) * (dt * dt * dt) / 6.0;
+  Qd = first_term + second_term + third_term;
 }
 
 Eigen::MatrixXd Propagator::compute_H_Dw(std::shared_ptr<State> state, const Eigen::Vector3d &w_uncorrected) {

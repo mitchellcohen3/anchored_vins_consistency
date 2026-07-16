@@ -118,7 +118,7 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
     if (state->_options.max_slam_features > 0) {
       of_statistics << "slam update,slam delayed,";
     }
-    of_statistics << "re-tri & marg,total" << std::endl;
+    of_statistics << "retri-marg,total" << std::endl;
   }
 
   //===================================================================================
@@ -192,7 +192,7 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
                                              const std::vector<std::vector<std::pair<size_t, Eigen::VectorXf>>> &feats) {
 
   // Start timing
-  rT1 = boost::posix_time::microsec_clock::local_time();
+  timers["tracking"].start();
 
   // Check if we actually have a simulated tracker
   // If not, recreate and re-cast the tracker to our simulation tracker
@@ -213,7 +213,7 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
 
   // Feed our simulation tracker
   trackSIM->feed_measurement_simulation(timestamp, camids, feats);
-  rT2 = boost::posix_time::microsec_clock::local_time();
+  timers["tracking"].stop();
 
   // Check if we should do zero-velocity, if so update the state with it
   // Note that in the case that we only use in the beginning initialization phase
@@ -256,7 +256,7 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
 void VioManager::track_image_and_update(const ov_core::CameraData &message_const) {
 
   // Start timing
-  rT1 = boost::posix_time::microsec_clock::local_time();
+  timers["tracking"].start();
 
   // Assert we have valid measurement data and ids
   assert(!message_const.sensor_ids.empty());
@@ -286,7 +286,7 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
   if (is_initialized_vio && trackARUCO != nullptr) {
     trackARUCO->feed_new_camera(message);
   }
-  rT2 = boost::posix_time::microsec_clock::local_time();
+  timers["tracking"].stop();
 
   // Check if we should do zero-velocity, if so update the state with it
   // Note that in the case that we only use in the beginning initialization phase
@@ -310,8 +310,7 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
   if (!is_initialized_vio) {
     is_initialized_vio = try_to_initialize(message);
     if (!is_initialized_vio) {
-      double time_track = (rT2 - rT1).total_microseconds() * 1e-6;
-      PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for tracking\n" RESET, time_track);
+      PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for tracking\n" RESET, timers["tracking"].elapsed());
       return;
     }
   }
@@ -325,6 +324,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   //===================================================================================
   // State propagation, and clone augmentation
   //===================================================================================
+
+  timers["propagation"].start();
 
   // Return if the camera measurement is out of order
   if (state->_timestamp > message.timestamp) {
@@ -340,7 +341,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   if (state->_timestamp != message.timestamp) {
     propagator->propagate_and_clone(state, message.timestamp);
   }
-  rT3 = boost::posix_time::microsec_clock::local_time();
+  timers["propagation"].stop();
+  timers["msckf"].start();
 
   // If we have not reached max clones, we should just return...
   // This isn't super ideal, but it keeps the logic after this easier...
@@ -439,6 +441,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
 
   // Append a new SLAM feature if we have the room to do so
   // Also check that we have waited our delay amount (normally prevents bad first set of slam points)
+
   if (state->_options.max_slam_features > 0 && message.timestamp - startup_time >= params.dt_slam_delay &&
       (int)state->_features_SLAM.size() < state->_options.max_slam_features + curr_aruco_tags) {
     // Get the total amount to add, then the max amount that we can add given our marginalize feature array
@@ -486,11 +489,11 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     if (state->_features_SLAM.find(feats_slam.at(i)->featid) != state->_features_SLAM.end()) {
       feats_slam_UPDATE.push_back(feats_slam.at(i));
       // PRINT_DEBUG("[UPDATE-SLAM]: found old feature %d (%d
-      // measurements)\n",(int)feats_slam.at(i)->featid,(int)feats_slam.at(i)->timestamps_left.size());
+      //             measurements)\n ",(int)feats_slam.at(i)->featid,(int)feats_slam.at(i)->timestamps_left.size());
     } else {
       feats_slam_DELAYED.push_back(feats_slam.at(i));
-      // PRINT_DEBUG("[UPDATE-SLAM]: new feature ready %d (%d
-      // measurements)\n",(int)feats_slam.at(i)->featid,(int)feats_slam.at(i)->timestamps_left.size());
+      // PRINT_DEBUG("[UPDATE-SLAM]: new feature ready %d (%d measurements)\n ", (int)feats_slam.at(i)->featid,
+      //             (int)feats_slam.at(i)->timestamps.size());
     }
   }
 
@@ -524,7 +527,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     featsup_MSCKF.erase(featsup_MSCKF.begin(), featsup_MSCKF.end() - state->_options.max_msckf_in_update);
   updaterMSCKF->update(state, featsup_MSCKF);
   propagator->invalidate_cache();
-  rT4 = boost::posix_time::microsec_clock::local_time();
+  timers["msckf"].stop();
+  timers["slam_update"].start();
 
   // Perform SLAM delay init and update
   // NOTE: that we provide the option here to do a *sequential* update
@@ -543,9 +547,13 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     propagator->invalidate_cache();
   }
   feats_slam_UPDATE = feats_slam_UPDATE_TEMP;
-  rT5 = boost::posix_time::microsec_clock::local_time();
+  timers["slam_update"].stop();
+  timers["slam_delay"].start();
+  PRINT_DEBUG("Trying to SLAM delay init %d features...\n", (int)feats_slam_DELAYED.size());
+
   updaterSLAM->delayed_init(state, feats_slam_DELAYED);
-  rT6 = boost::posix_time::microsec_clock::local_time();
+  timers["slam_delay"].stop();
+  timers["retri_marg"].start();
 
   //===================================================================================
   // Update our visualization feature set, and clean up the old features
@@ -594,25 +602,27 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
 
   // Finally marginalize the oldest clone if needed
   StateHelper::marginalize_old_clone(state);
-  rT7 = boost::posix_time::microsec_clock::local_time();
+  timers["retri_marg"].stop();
 
   //===================================================================================
   // Debug info, and stats tracking
   //===================================================================================
 
   // Get timing statitics information
-  double time_track = (rT2 - rT1).total_microseconds() * 1e-6;
-  double time_prop = (rT3 - rT2).total_microseconds() * 1e-6;
-  double time_msckf = (rT4 - rT3).total_microseconds() * 1e-6;
-  double time_slam_update = (rT5 - rT4).total_microseconds() * 1e-6;
-  double time_slam_delay = (rT6 - rT5).total_microseconds() * 1e-6;
-  double time_marg = (rT7 - rT6).total_microseconds() * 1e-6;
-  double time_total = (rT7 - rT1).total_microseconds() * 1e-6;
+  double time_track = timers["tracking"].elapsed();
+  double time_prop = timers["propagation"].elapsed();
+  double time_msckf = timers["msckf"].elapsed();
+  double time_slam_update = timers["slam_update"].elapsed();
+  double time_slam_delay = timers["slam_delay"].elapsed();
+  double time_marg = timers["retri_marg"].elapsed();
+  double time_total = time_track + time_prop + time_msckf + time_slam_update + time_slam_delay + time_marg;
 
   // Timing information
   PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for tracking\n" RESET, time_track);
   PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for propagation\n" RESET, time_prop);
   PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for MSCKF update (%d feats)\n" RESET, time_msckf, (int)featsup_MSCKF.size());
+  PRINT_DEBUG(BLUE "[STATE]: %d SLAM features in state\n" RESET, (int)state->_features_SLAM.size());
+
   if (state->_options.max_slam_features > 0) {
     PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for SLAM update (%d feats)\n" RESET, time_slam_update, (int)state->_features_SLAM.size());
     PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for SLAM delayed init (%d feats)\n" RESET, time_slam_delay, (int)feats_slam_DELAYED.size());

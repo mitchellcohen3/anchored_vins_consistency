@@ -1,0 +1,397 @@
+"""This generates a LaTeX table comparing ATE across different noise levels
+for multiple algorithms and datasets.
+
+The input to this script is the ATE CSV file generated
+by the evaluation pipeline, which should have the following columns:
+
+algorithm, dataset, mean_ori, std_ori, mean_pos, std_pos, median_pos, num_runs
+
+The "algorithm" column should encode both the base algorithm name and the noise level,
+e.g. "fej_global3d__sigma1.0" or "dri_fej_anchoredmsckfinversedepth__sigma4.0".
+
+This script will parse the CSV, split the algorithm column to extract the base algorithm and noise level, and then
+generate a latex table where the rows are the base algorithms
+and columns are grouped by dataset and noise level.
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import argparse
+import subprocess
+import logging
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from pyvins.file_utils import get_all_subdirectory_names
+from pyvins.plot_utils import set_plot_theme
+from pyvins.tables import create_ate_table, create_combined_ate_table, create_rpe_table
+from pyvins.processing import get_label_for_alg
+
+import pandas as pd
+import typing
+
+colors = set_plot_theme(palette="colorblind", enable_latex=True)
+
+logging.basicConfig(level=logging.INFO)
+
+
+def generate_ate_table(
+    path_csv: str,
+    algorithms: typing.List[str],
+    labels: typing.List[str],
+    output_path: str,
+    noise_levels: typing.List[float],
+    datasets: typing.List[str] = None,
+    ori_col: str = "mean_ori",
+    pos_col: str = "mean_pos",
+    bold_best: bool = True,
+    precision: int = 3,
+) -> str:
+    """Generate a LaTeX ATE table grouped by noise level.
+
+    Rows are algorithms; columns are grouped by noise level with one sub-column
+    per dataset. Each cell shows ``mean_ori / mean_pos``.
+
+    Parameters
+    ----------
+    path_csv : str
+        Path to the CSV file produced by the evaluation pipeline.
+    algorithms : list of str
+        Base algorithm names to include (in row order).
+    labels : list of str
+        Display labels corresponding to each entry in *algorithms*.
+    output_path : str
+        Path to write the ``.tex`` file.
+    noise_levels : list of float
+        Noise levels (sigma values) to include as column groups.
+    ori_col, pos_col : str
+        Column names for orientation and position ATE.
+    bold_best : bool
+        If True, bold the lowest value per (noise, dataset) column.
+    precision : int
+        Decimal places for numeric values.
+
+    Returns
+    -------
+    str
+        LaTeX tabular string.
+    """
+    if not os.path.exists(path_csv):
+        logging.error(f"CSV file not found: {path_csv}")
+        return ""
+
+    df = pd.read_csv(path_csv)
+
+    # Split algorithm column into base name and noise level
+    df[["base_algorithm", "noise"]] = df["algorithm"].str.split(
+        "__sigma", n=1, expand=True
+    )
+    df["noise"] = df["noise"].astype(float)
+
+    # Filter to requested algorithms and noise levels
+    df = df[df["base_algorithm"].isin(algorithms)]
+    df = df[df["noise"].isin(noise_levels)]
+
+    if datasets is None:
+        datasets = sorted(df["dataset"].unique())
+
+    label_map = dict(zip(algorithms, labels))
+
+    # Build lookup: (base_algorithm, dataset, noise) -> (ori, pos)
+    lookup: typing.Dict[typing.Tuple, typing.Tuple[float, float]] = {}
+    for _, row in df.iterrows():
+        key = (row["base_algorithm"], row["dataset"], row["noise"])
+        lookup[key] = (float(row[ori_col]), float(row[pos_col]))
+
+    def esc(s: str) -> str:
+        return str(s).replace("_", r"\_")
+
+    # Per-(noise, dataset) best values for bolding
+    best: typing.Dict[typing.Tuple, typing.Tuple] = {}
+    if bold_best:
+        for noise in noise_levels:
+            for ds in datasets:
+                vals = [
+                    lookup[(a, ds, noise)]
+                    for a in algorithms
+                    if (a, ds, noise) in lookup
+                ]
+                best[(noise, ds)] = (
+                    min(v[0] for v in vals) if vals else None,
+                    min(v[1] for v in vals) if vals else None,
+                )
+
+    def fmt_val(v: float, best_v) -> str:
+        s = f"{v:.{precision}f}"
+        if bold_best and best_v is not None and abs(v - best_v) < 1e-9:
+            s = f"\\textbf{{{s}}}"
+        return s
+
+    def fmt_cell(algo: str, ds: str, noise: float) -> str:
+        key = (algo, ds, noise)
+        if key not in lookup:
+            return "-"
+        ori, pos = lookup[key]
+        best_ori, best_pos = best.get((noise, ds), (None, None))
+        return f"{fmt_val(ori, best_ori)} / {fmt_val(pos, best_pos)}"
+
+    n_datasets = len(datasets)
+    n_noise = len(noise_levels)
+
+    col_fmt = "l" + "c" * (n_noise * n_datasets)
+
+    # First header row: noise-level group spans
+    noise_spans = " & ".join(
+        f"\\multicolumn{{{n_datasets}}}{{c}}{{$\\sigma={noise:.4g}$}}"
+        for noise in noise_levels
+    )
+
+    # Cmidrules under each noise group
+    cmidrules = " ".join(
+        f"\\cmidrule(lr){{{2 + i * n_datasets}-{1 + (i + 1) * n_datasets}}}"
+        for i in range(n_noise)
+    )
+
+    # Second header row: dataset names repeated per noise group
+    dataset_headers = " & ".join(esc(ds) for _ in noise_levels for ds in datasets)
+
+    lines = [
+        f"\\begin{{tabular}}{{{col_fmt}}}",
+        "\\toprule",
+        f" & {noise_spans}" + r" \\",
+        cmidrules,
+        f"Algorithm & {dataset_headers}" + r" \\",
+        "\\midrule",
+    ]
+
+    for algo in algorithms:
+        label = label_map.get(algo, esc(algo))
+        cells = [label] + [
+            fmt_cell(algo, ds, noise) for noise in noise_levels for ds in datasets
+        ]
+        lines.append(" & ".join(cells) + r" \\")
+
+    lines += ["\\bottomrule", "\\end{tabular}"]
+    table_str = "\n".join(lines)
+
+    parent = os.path.dirname(output_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write(table_str)
+    logging.info(f"Saved ATE noise comparison table to {output_path}")
+
+    return table_str
+
+
+def generate_nees_table(
+    path_csv: str,
+    algorithms: typing.List[str],
+    labels: typing.List[str],
+    output_path: str,
+    noise_levels: typing.List[float],
+    ori_col: str = "mean_ori_nees",
+    pos_col: str = "mean_pos_nees",
+    precision: int = 3,
+) -> str:
+    """Generate a LaTeX ATE table grouped by noise level.
+
+    Rows are algorithms; columns are grouped by noise level with one sub-column
+    per dataset. Each cell shows ``mean_ori / mean_pos``.
+
+    Parameters
+    ----------
+    path_csv : str
+        Path to the CSV file produced by the evaluation pipeline.
+    algorithms : list of str
+        Base algorithm names to include (in row order).
+    labels : list of str
+        Display labels corresponding to each entry in *algorithms*.
+    output_path : str
+        Path to write the ``.tex`` file.
+    noise_levels : list of float
+        Noise levels (sigma values) to include as column groups.
+    ori_col, pos_col : str
+        Column names for orientation and position ATE.
+    bold_best : bool
+        If True, bold the lowest value per (noise, dataset) column.
+    precision : int
+        Decimal places for numeric values.
+
+    Returns
+    -------
+    str
+        LaTeX tabular string.
+    """
+    if not os.path.exists(path_csv):
+        logging.error(f"CSV file not found: {path_csv}")
+        return ""
+
+    df = pd.read_csv(path_csv)
+
+    # Split algorithm column into base name and noise level
+    df[["base_algorithm", "noise"]] = df["algorithm"].str.split(
+        "__sigma", n=1, expand=True
+    )
+    df["noise"] = df["noise"].astype(float)
+
+    # Filter to requested algorithms and noise levels
+    df = df[df["base_algorithm"].isin(algorithms)]
+    df = df[df["noise"].isin(noise_levels)]
+
+    datasets = sorted(df["dataset"].unique())
+    label_map = dict(zip(algorithms, labels))
+
+    # Build lookup: (base_algorithm, dataset, noise) -> (ori, pos)
+    lookup: typing.Dict[typing.Tuple, typing.Tuple[float, float]] = {}
+    for _, row in df.iterrows():
+        key = (row["base_algorithm"], row["dataset"], row["noise"])
+        lookup[key] = (float(row[ori_col]), float(row[pos_col]))
+
+    def esc(s: str) -> str:
+        return str(s).replace("_", r"\_")
+
+    def fmt_val(v: float) -> str:
+        s = f"{v:.{precision}f}"
+        return s
+
+    def fmt_cell(algo: str, ds: str, noise: float) -> str:
+        key = (algo, ds, noise)
+        if key not in lookup:
+            return "-"
+        ori, pos = lookup[key]
+        return f"{fmt_val(ori)} / {fmt_val(pos)}"
+
+    n_datasets = len(datasets)
+    n_noise = len(noise_levels)
+
+    col_fmt = "l" + "c" * (n_noise * n_datasets)
+
+    # First header row: noise-level group spans
+    noise_spans = " & ".join(
+        f"\\multicolumn{{{n_datasets}}}{{c}}{{$\\sigma={noise:.4g}$}}"
+        for noise in noise_levels
+    )
+
+    # Cmidrules under each noise group
+    cmidrules = " ".join(
+        f"\\cmidrule(lr){{{2 + i * n_datasets}-{1 + (i + 1) * n_datasets}}}"
+        for i in range(n_noise)
+    )
+
+    # Second header row: dataset names repeated per noise group
+    dataset_headers = " & ".join(esc(ds) for _ in noise_levels for ds in datasets)
+
+    lines = [
+        f"\\begin{{tabular}}{{{col_fmt}}}",
+        "\\toprule",
+        f" & {noise_spans}" + r" \\",
+        cmidrules,
+        f"Algorithm & {dataset_headers}" + r" \\",
+        "\\midrule",
+    ]
+
+    for algo in algorithms:
+        label = label_map.get(algo, esc(algo))
+        cells = [label] + [
+            fmt_cell(algo, ds, noise) for noise in noise_levels for ds in datasets
+        ]
+        lines.append(" & ".join(cells) + r" \\")
+
+    lines += ["\\bottomrule", "\\end{tabular}"]
+    table_str = "\n".join(lines)
+
+    parent = os.path.dirname(output_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write(table_str)
+    logging.info(f"Saved ATE noise comparison table to {output_path}")
+
+    return table_str
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Evaluate SLAM results on real data, generates CSV files and outputs table for the paper."
+    )
+    parser.add_argument("--align_mode")
+    parser.add_argument("--folder_gt")
+    parser.add_argument("--folder_algorithms")
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        default=None,
+        help="Subset of dataset names to include. If omitted, all datasets are used.",
+    )
+    parser.add_argument(
+        "--algorithms",
+        nargs="+",
+        default=None,
+        help="Subset of algorithm names to include. If omitted, all algorithms are used.",
+    )
+    parser.add_argument(
+        "--labels",
+        nargs="+",
+        default=None,
+        metavar="LABEL",
+        help="Display labels for each algorithm listed in --algorithms (same order).",
+    )
+    parser.add_argument("--output", default=None, help="Path to save the LaTeX table.")
+
+    args = parser.parse_args()
+
+    # Directory to save the results
+    output_dir = "/home/mitchell/Documents/paper_results/camnoise_experiment/ov_featrep_sim_camnoise_final/results"
+    args.path_ate_csv = os.path.join(output_dir, "ate_results.csv")
+    args.path_nees_csv = os.path.join(output_dir, "nees_results.csv")
+
+    args.noise_levels = [1.0, 4.0]
+
+    args.datasets = [
+        "sim_tum_corridor1_512_16_okvis",
+        "sim_udel_gore",
+        "sim_udel_arl",
+    ]
+
+    args.algorithms = [
+        "none_global3d",
+        "fej_global3d",
+        "dri_fej_global3d",
+        "none_anchoredmsckfinversedepth",
+        "fej_anchoredmsckfinversedepth",
+        "dri_fej_anchoredmsckfinversedepth",
+    ]
+
+    if args.algorithms is None:
+        # Discover all algorithms by listing the subdirectories in folder_algorithms
+        args.algorithms = get_all_subdirectory_names(args.folder_algorithms)
+        logging.info(f"Discovered algorithms: {args.algorithms}")
+
+    args.labels = [get_label_for_alg(a) for a in args.algorithms]
+
+    if args.labels is not None and args.algorithms is None:
+        parser.error("--algorithm_labels requires --algorithms to be specified.")
+    if args.labels is not None and len(args.labels) != len(args.algorithms):
+        parser.error(
+            "--algorithm_labels must have the same number of entries as --algorithms."
+        )
+
+    logging.info(
+        f"Loading ATE results from {args.path_ate_csv} and generating LaTeX table..."
+    )
+    output_path = os.path.join(output_dir, "ate_table_noise.txt")
+    generate_ate_table(
+        args.path_ate_csv,
+        args.algorithms,
+        args.labels,
+        output_path,
+        args.noise_levels,
+        datasets=args.datasets,
+    )
+
+    # Generate the NEES table as well
+    # logging.info(f"Loading NEES results from {args.path_nees_csv} and generating LaTeX table...")
+    # output_nees_path = os.path.join(output_dir, "nees_table_noise.txt")
+    # generate_nees_table(args.path_nees_csv, args.algorithms, args.labels, output_nees_path, args.noise_levels)

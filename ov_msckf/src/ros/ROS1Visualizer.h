@@ -130,6 +130,10 @@ protected:
   /// Publish loop-closure information of current pose and active track information
   void publish_loopclosure_information();
 
+  // Writes the estimated pose to a file
+  void write_estimated_pose();
+  void write_groundtruth_pose();
+
   /// Global node handler
   std::shared_ptr<ros::NodeHandle> _nh;
 
@@ -140,6 +144,7 @@ protected:
   std::shared_ptr<Simulator> _sim;
 
   // Our publishers
+  image_transport::ImageTransport _it;
   image_transport::Publisher it_pub_tracks, it_pub_loop_img_depth, it_pub_loop_img_depth_color;
   ros::Publisher pub_poseimu, pub_odomimu, pub_pathimu;
   ros::Publisher pub_points_msckf, pub_points_slam, pub_points_aruco, pub_points_sim;
@@ -198,6 +203,9 @@ protected:
   // Files and if we should save total state
   bool save_total_state = false;
   std::ofstream of_state_est, of_state_std, of_state_gt;
+
+  // Files to save the groundtruth poses and estimated poses
+  std::ofstream of_pose_est, of_pose_gt;
 };
 
 } // namespace ov_msckf

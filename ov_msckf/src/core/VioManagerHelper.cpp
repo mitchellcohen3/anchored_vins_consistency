@@ -37,7 +37,7 @@ using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
-void VioManager::initialize_with_gt(Eigen::Matrix<double, 17, 1> imustate) {
+void VioManager::initialize_with_gt(Eigen::Matrix<double, 17, 1> imustate, const Eigen::Matrix<double, 15, 15> &imucov) {
 
   // Initialize the system
   state->_imu->set_value(imustate.block(1, 0, 16, 1));
@@ -46,11 +46,11 @@ void VioManager::initialize_with_gt(Eigen::Matrix<double, 17, 1> imustate) {
   // Fix the global yaw and position gauge freedoms
   // TODO: Why does this break out simulation consistency metrics?
   std::vector<std::shared_ptr<ov_type::Type>> order = {state->_imu};
-  Eigen::MatrixXd Cov = std::pow(0.02, 2) * Eigen::MatrixXd::Identity(state->_imu->size(), state->_imu->size());
-  Cov.block(0, 0, 3, 3) = std::pow(0.017, 2) * Eigen::Matrix3d::Identity(); // q
-  Cov.block(3, 3, 3, 3) = std::pow(0.05, 2) * Eigen::Matrix3d::Identity();  // p
-  Cov.block(6, 6, 3, 3) = std::pow(0.01, 2) * Eigen::Matrix3d::Identity();  // v (static)
-  StateHelper::set_initial_covariance(state, Cov, order);
+  // Eigen::MatrixXd Cov = std::pow(0.02, 2) * Eigen::MatrixXd::Identity(state->_imu->size(), state->_imu->size());
+  // Cov.block(0, 0, 3, 3) = std::pow(0.017, 2) * Eigen::Matrix3d::Identity(); // q
+  // Cov.block(3, 3, 3, 3) = std::pow(0.05, 2) * Eigen::Matrix3d::Identity();  // p
+  // Cov.block(6, 6, 3, 3) = std::pow(0.01, 2) * Eigen::Matrix3d::Identity();  // v (static)
+  StateHelper::set_initial_covariance(state, imucov, order);
 
   // Set the state time
   state->_timestamp = imustate(0, 0);
@@ -64,6 +64,8 @@ void VioManager::initialize_with_gt(Eigen::Matrix<double, 17, 1> imustate) {
   }
 
   // Print what we init'ed with
+  PRINT_WARNING(GREEN "[INIT]: INITIALIZED FROM GROUNDTRUTH FILE!!!!!\n" RESET);
+
   PRINT_DEBUG(GREEN "[INIT]: INITIALIZED FROM GROUNDTRUTH FILE!!!!!\n" RESET);
   PRINT_DEBUG(GREEN "[INIT]: orientation = %.4f, %.4f, %.4f, %.4f\n" RESET, state->_imu->quat()(0), state->_imu->quat()(1),
               state->_imu->quat()(2), state->_imu->quat()(3));
@@ -111,6 +113,44 @@ bool VioManager::try_to_initialize(const ov_core::CameraData &message) {
     if (success) {
 
       // Set our covariance (state should already be set in the initializer)
+      if (params.state_options.nav_state_representation == ov_type::PoseStateRepresentation::LieGroupLeft &&
+          params.state_options.perform_init_covariance_propagation) {
+        PRINT_WARNING("[INIT] Convering initial covariance to right-invariant represenation!\n");
+        // If the state representation is right-invariant, we need to convert the covariance from
+        // the standard representation to the right-invariant representation.
+        Eigen::Matrix<double, 15, 15> imu_cov_gc = covariance.block(0, 0, 15, 15);
+        Eigen::Matrix<double, 15, 15> A_mat = Eigen::Matrix<double, 15, 15>::Identity();
+
+        Eigen::Matrix3d R_GtoI = state->_imu->Rot();
+        Eigen::Vector3d v_k = state->_imu->vel();
+        Eigen::Vector3d r_k = state->_imu->pos();
+
+        A_mat.block(0, 0, 3, 3) = R_GtoI;
+        A_mat.block(3, 0, 3, 3) = -ov_core::skew_x(r_k);
+        A_mat.block(6, 0, 3, 3) = -ov_core::skew_x(v_k);
+        covariance.block(0, 0, 15, 15) = A_mat.inverse() * imu_cov_gc * A_mat.inverse().transpose();
+          
+        PRINT_WARNING("[INIT]: Covariance(0,0) = %.6f\n", covariance(0, 0));
+        PRINT_WARNING("[INIT]: Covariance(1,1) = %.6f\n", covariance(3, 3));
+        PRINT_WARNING("[INIT]: Covariance(2,2) = %.6f\n", covariance(6, 6));
+        std::cout << "Att cov block: " << std::endl;
+        std::cout << covariance.block(0, 0, 3, 3) << std::endl;
+        std::cout << "Pos cov block: " << std::endl;
+        std::cout << covariance.block(3, 3, 3, 3) << std::endl;
+        std::cout << "Vel cov block: " << std::endl;
+        std::cout << covariance.block(6, 6, 3, 3) << std::endl;
+        
+        PRINT_WARNING("[INIT] Size of initial covariance matrix is %d\n", covariance.rows());
+        PRINT_WARNING("[INIT] Initial gyro bias covariance: %.6f, %.6f, %.6f\n", covariance(9, 9), covariance(10, 10), covariance(11, 11));
+        PRINT_WARNING("[INIT] Initial accel bias covariance: %.6f, %.6f, %.6f\n", covariance(12, 12), covariance(13, 13),
+                      covariance(14, 14));
+
+        PRINT_WARNING("[INIT] initial position: %.4f, %.4f, %.4f\n", state->_imu->pos()(0), state->_imu->pos()(1), state->_imu->pos()(2));
+        PRINT_WARNING("[INIT] initial velocity: %.4f, %.4f, %.4f\n", state->_imu->vel()(0), state->_imu->vel()(1), state->_imu->vel()(2));
+        PRINT_WARNING("[INIT] initial orientation (quat): %.4f, %.4f, %.4f, %.4f\n", state->_imu->quat()(0), state->_imu->quat()(1), state->_imu->quat()(2),
+                      state->_imu->quat()(3));
+      }
+
       StateHelper::set_initial_covariance(state, covariance, order);
 
       // Set the state time
@@ -197,7 +237,8 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
   assert(state->_clones_IMU.find(message.timestamp) != state->_clones_IMU.end());
   active_tracks_time = message.timestamp;
   active_image = cv::Mat();
-  trackFEATS->display_active(active_image, 255, 255, 255, 255, 255, 255, " ");
+  // trackFEATS->display_active(active_image, 255, 255, 255, 255, 255, 255, " ");
+  trackFEATS->display_active(active_image, 0, 255, 0, 0, 0, 255, "");
   if (!active_image.empty()) {
     active_image = active_image(cv::Rect(0, 0, message.images.at(0).cols, message.images.at(0).rows));
   }

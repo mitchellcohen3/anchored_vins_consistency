@@ -78,7 +78,8 @@ public:
     Eigen::Vector3d p_FinA;
 
     /// Triangulated position of this feature, in the anchor frame first estimate
-    Eigen::Vector3d p_FinA_fej;
+    // not needed??
+    // Eigen::Vector3d p_FinA_fej;
 
     /// Triangulated position of this feature, in the global frame
     Eigen::Vector3d p_FinG;

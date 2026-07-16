@@ -21,6 +21,8 @@
 
 #include <Eigen/Eigen>
 #include <boost/filesystem.hpp>
+#include <fstream>
+#include <iomanip>
 #include <string>
 
 #include "calc/ResultTrajectory.h"
@@ -85,13 +87,13 @@ void plot_3errors(ov_eval::Statistics sx, ov_eval::Statistics sy, ov_eval::Stati
 int main(int argc, char **argv) {
 
   // Verbosity setting
-  ov_core::Printer::setPrintLevel("INFO");
+  ov_core::Printer::setPrintLevel("DEBUG");
 
   // Ensure we have a path
   if (argc < 4) {
     PRINT_ERROR(RED "ERROR: Please specify a align mode, groudtruth, and algorithm run file\n" RESET);
-    PRINT_ERROR(RED "ERROR: ./error_singlerun <align_mode> <file_gt.txt> <file_est.txt>\n" RESET);
-    PRINT_ERROR(RED "ERROR: rosrun ov_eval error_singlerun <align_mode> <file_gt.txt> <file_est.txt>\n" RESET);
+    PRINT_ERROR(RED "ERROR: ./error_singlerun <align_mode> <file_gt.txt> <file_est.txt> [output.txt]\n" RESET);
+    PRINT_ERROR(RED "ERROR: rosrun ov_eval error_singlerun <align_mode> <file_gt.txt> <file_est.txt> [output.txt]\n" RESET);
     std::exit(EXIT_FAILURE);
   }
 
@@ -278,6 +280,50 @@ int main(int argc, char **argv) {
     roll.timestamps.at(i) -= starttime2;
     pitch.timestamps.at(i) -= starttime2;
     yaw.timestamps.at(i) -= starttime2;
+  }
+
+  //===========================================================
+  // Output errors and NEES to text file (if output path provided)
+  //===========================================================
+  PRINT_INFO("======================================\n");
+  PRINT_INFO("Outputting errors and NEES to text file (if specified)\n");
+  std::cout << "argc: " << argc << std::endl;
+  if (argc >= 5) {
+    PRINT_INFO("Writing errors to text file...\n");
+    std::string output_filename = argv[4];
+    std::ofstream outfile(output_filename);
+
+    if (outfile.is_open()) {
+      // Line 1: Number of NEES timesteps, Number of error timesteps
+      outfile << nees_ori.timestamps.size() << " " << posx.timestamps.size() << std::endl;
+
+      // Line 2: Average NEES (orientation, position)
+      outfile << std::fixed << std::setprecision(9) << nees_ori.mean << " " << nees_pos.mean << std::endl;
+
+      // Line 3: Average errors (orientation deg, position m)
+      outfile << std::fixed << std::setprecision(9) << error_ori.rmse << " " << error_pos.rmse << std::endl;
+
+      // Per-timestep NEES: timestamp nees_ori nees_pos
+      double nees_starttime = (nees_ori.timestamps.empty()) ? 0 : nees_ori.timestamps.at(0);
+      for (size_t i = 0; i < nees_ori.timestamps.size(); i++) {
+        outfile << std::fixed << std::setprecision(9) << (nees_ori.timestamps.at(i) - nees_starttime) << " "
+                << nees_ori.values.at(i) << " " << nees_pos.values.at(i) << std::endl;
+      }
+
+      // Per-timestep errors: timestamp ori_error pos_error
+      for (size_t i = 0; i < posx.timestamps.size(); i++) {
+        double ori_magnitude = std::sqrt(orix.values.at(i) * orix.values.at(i) + oriy.values.at(i) * oriy.values.at(i) +
+                                         oriz.values.at(i) * oriz.values.at(i));
+        double pos_magnitude = std::sqrt(posx.values.at(i) * posx.values.at(i) + posy.values.at(i) * posy.values.at(i) +
+                                         posz.values.at(i) * posz.values.at(i));
+        outfile << std::fixed << std::setprecision(9) << posx.timestamps.at(i) << " " << ori_magnitude << " " << pos_magnitude << std::endl;
+      }
+
+      outfile.close();
+      PRINT_INFO("Errors written to: %s\n", output_filename.c_str());
+    } else {
+      PRINT_ERROR(RED "ERROR: Could not open output file: %s\n" RESET, output_filename.c_str());
+    }
   }
 
 #ifdef HAVE_PYTHONLIBS

@@ -2,22 +2,42 @@
 
 verbosity: "INFO" # ALL, DEBUG, INFO, WARNING, ERROR, SILENT
 
-use_fej: true # if first-estimate Jacobians should be used (enable for good consistency)
-integration: "rk4" # discrete, rk4, analytical (if rk4 or analytical used then analytical covariance propagation is used)
+perform_init_covariance_propagation: true
+nav_state_representation: "se23_left" # decoupled_right, se23_left, se23_right
+integration: "liegroup" # discrete, rk4, analytical (if rk4 or analytical used then analytical covariance propagation is used)
 use_stereo: true # if we have more than 1 camera, if we should try to track stereo constraints
 max_cameras: 2 # how many cameras we have 1 = mono, 2 = stereo, >2 = binocular (all mono tracking)
+consistency_method: "fej"
 
-calib_cam_extrinsics: true # if the transform between camera and IMU should be optimized R_ItoC, p_CinI
-calib_cam_intrinsics: true # if camera intrinsics should be optimized (focal, center, distortion)
-calib_cam_timeoffset: true # if timeoffset between camera and IMU should be optimized
-calib_imu_intrinsics: true # if imu intrinsics should be calibrated
-calib_imu_g_sensitivity: true # if gyroscope gravity sensitivity should be calibrated
+# State Options for calibration
+calib_cam_extrinsics: false # if the transform between camera and IMU should be optimized R_ItoC, p_CinI
+calib_cam_intrinsics: false # if camera intrinsics should be optimized (focal, center, distortion)
+calib_cam_timeoffset: false # if timeoffset between camera and IMU should be optimized
+calib_imu_intrinsics: false # if imu intrinsics should be calibrated
+calib_imu_g_sensitivity: false # if gyroscope gravity sensitivity should be calibrated
+
+# Prior sigmas for the state
+init_prior_q: 0.02
+init_prior_p: 0.05
+init_prior_v: 0.01
+init_prior_bg: 0.02
+init_prior_ba: 0.02
+
+# Prior sigmas for calibration parameters
+sigma_prior_cam_pose_att: 0.005 # [rad]
+sigma_prior_cam_pose_r: 0.01 # [meters]
+sigma_prior_cam_intrinsics: 1.0 # [pixels]
+sigma_prior_cam_dist: 0.005
+sigma_prior_timeoffset: 0.01
 
 max_clones: 11
 max_slam: 50
 max_slam_in_update: 25
 max_msckf_in_update: 10
 dt_slam_delay: 2
+
+# Feature initialization parameters
+# fi_max_cond_number: 10000000
 
 gravity_mag: 9.81
 
@@ -115,15 +135,23 @@ relative_config_imucam: "kalibr_imucam_chain.yaml"
 
 # ==================================================================
 # ==================================================================
-
-
 sim_seed_state_init: 0
 sim_seed_preturb: 0
 sim_seed_measurements: 0
 sim_do_perturbation: false
 sim_traj_path: "src/open_vins/ov_data/sim/tum_corridor1_512_16_okvis.txt"
-sim_distance_threshold: 1.1
+sim_distance_threshold: 1.0
 sim_freq_cam: 10
 sim_freq_imu: 400
 sim_min_feature_gen_dist: 5.0
 sim_max_feature_gen_dist: 7.0
+sim_noise_active: true
+sim_landmark_distribution: "random"
+
+# Whether or not we should perturb the initial IMU state
+sim_do_imu_perturbation: false
+sim_seed_imu_perturb: 0
+sim_sigma_init_att: 0.1
+sim_sigma_init_vel: 0.1
+sim_sigma_init_ba: 0.1
+sim_sigma_init_bg: 0.01

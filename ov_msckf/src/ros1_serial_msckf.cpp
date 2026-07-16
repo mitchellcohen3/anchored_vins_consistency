@@ -251,8 +251,11 @@ int main(int argc, char **argv) {
       Eigen::Matrix<double, 17, 1> imustate;
       if (!gt_states.empty() && !sys->initialized() && ov_core::DatasetReader::get_gt_state(meas_time, imustate, gt_states)) {
         // biases are pretty bad normally, so zero them
-        // imustate.block(11,0,6,1).setZero();
-        sys->initialize_with_gt(imustate);
+        Eigen::MatrixXd Cov = std::pow(0.02, 2) * Eigen::MatrixXd::Identity(15, 15);
+        Cov.block(0, 0, 3, 3) = std::pow(0.017, 2) * Eigen::Matrix3d::Identity(); // q
+        Cov.block(3, 3, 3, 3) = std::pow(0.05, 2) * Eigen::Matrix3d::Identity();  // p
+        Cov.block(6, 6, 3, 3) = std::pow(0.01, 2) * Eigen::Matrix3d::Identity();  // v (static)
+        sys->initialize_with_gt(imustate, Cov);
       }
 
       // Pass our data into our visualizer callbacks!
@@ -273,6 +276,8 @@ int main(int argc, char **argv) {
       break;
     }
   }
+
+  PRINT_WARNING(YELLOW "[SERIAL]: Finished processing bag! Shutting down ROS node and visualizer...\n" RESET);
 
   // Final visualization
   viz->visualize_final();

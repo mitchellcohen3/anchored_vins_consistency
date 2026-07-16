@@ -1,0 +1,3 @@
+<launch>
+    <node name="ov_rviz" pkg="rviz" type="rviz" output="log" args="-d $(find ov_msckf)/launch/display.rviz" />
+</launch>

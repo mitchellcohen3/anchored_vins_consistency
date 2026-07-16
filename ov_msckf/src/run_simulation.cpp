@@ -29,23 +29,14 @@
 #include "utils/print.h"
 #include "utils/sensor_data.h"
 
-#if ROS_AVAILABLE == 1
 #include "ros/ROS1Visualizer.h"
 #include <ros/ros.h>
-#elif ROS_AVAILABLE == 2
-#include "ros/ROS2Visualizer.h"
-#include <rclcpp/rclcpp.hpp>
-#endif
 
 using namespace ov_msckf;
 
 std::shared_ptr<Simulator> sim;
 std::shared_ptr<VioManager> sys;
-#if ROS_AVAILABLE == 1
 std::shared_ptr<ROS1Visualizer> viz;
-#elif ROS_AVAILABLE == 2
-std::shared_ptr<ROS2Visualizer> viz;
-#endif
 
 // Define the function to be called when ctrl-c (SIGINT) is sent to process
 void signal_callback_handler(int signum) { std::exit(signum); }
@@ -59,28 +50,19 @@ int main(int argc, char **argv) {
     config_path = argv[1];
   }
 
-#if ROS_AVAILABLE == 1
   // Launch our ros node
   ros::init(argc, argv, "run_simulation");
   auto nh = std::make_shared<ros::NodeHandle>("~");
   nh->param<std::string>("config_path", config_path, config_path);
-#elif ROS_AVAILABLE == 2
-  // Launch our ros node
-  rclcpp::init(argc, argv);
-  rclcpp::NodeOptions options;
-  options.allow_undeclared_parameters(true);
-  options.automatically_declare_parameters_from_overrides(true);
-  auto node = std::make_shared<rclcpp::Node>("run_simulation", options);
-  node->get_parameter<std::string>("config_path", config_path);
-#endif
 
   // Load the config
   auto parser = std::make_shared<ov_core::YamlParser>(config_path);
-#if ROS_AVAILABLE == 1
   parser->set_node_handler(nh);
-#elif ROS_AVAILABLE == 2
-  parser->set_node(node);
-#endif
+
+  // Load in the ent time of the simulation
+  double sim_end_time = -1;
+  nh->param<double>("sim_end_time", sim_end_time, sim_end_time);
+  PRINT_INFO(GREEN "[SIM]: Simulation end time set to %.3f seconds\n" RESET, sim_end_time);
 
   // Verbosity
   std::string verbosity = "INFO";
@@ -127,8 +109,10 @@ int main(int argc, char **argv) {
   // Subtract out the imu to camera time offset
   imustate(0, 0) -= sim->get_true_parameters().calib_camimu_dt;
 
-  // Initialize our filter with the groundtruth
-  sys->initialize_with_gt(imustate);
+  Eigen::Matrix<double, 17, 1> perturbed_state = sim->perturb_initial_state(imustate);
+  Eigen::Matrix<double, 15, 15> imu_cov = sim->get_initial_covariance(imustate);
+  // std::cout << "Initial Covariance: \n" << imu_cov << std::endl;
+  sys->initialize_with_gt(perturbed_state, imu_cov);
 
   //===================================================================================
   //===================================================================================
@@ -139,26 +123,29 @@ int main(int argc, char **argv) {
   std::vector<int> buffer_camids;
   std::vector<std::vector<std::pair<size_t, Eigen::VectorXf>>> buffer_feats;
 
+  double start_time = next_imu_time;
+  if (sim_end_time < 0) {
+    sim_end_time = 100000;
+  }
+
+  double end_time = start_time + sim_end_time;
+  PRINT_INFO(GREEN "[SIM]: Running simulation from %.2f to %.2f seconds\n" RESET, start_time, end_time);
+
   // Step through the rosbag
-#if ROS_AVAILABLE == 1
   while (sim->ok() && ros::ok()) {
-#elif ROS_AVAILABLE == 2
-  while (sim->ok() && rclcpp::ok()) {
-#else
-  signal(SIGINT, signal_callback_handler);
-  while (sim->ok()) {
-#endif
+
+    if (sim->current_timestamp() > end_time) {
+      PRINT_INFO(GREEN "[SIM]: Reached the end of the simulation time at %.2f seconds\n" RESET, sim->current_timestamp());
+      break;
+    }
 
     // IMU: get the next simulated IMU measurement if we have it
     ov_core::ImuData message_imu;
     bool hasimu = sim->get_next_imu(message_imu.timestamp, message_imu.wm, message_imu.am);
     if (hasimu) {
       sys->feed_measurement_imu(message_imu);
-#if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
-      viz->visualize_odometry(message_imu.timestamp);
-#endif
+      // viz->visualize_odometry(message_imu.timestamp);
     }
-
     // CAM: get the next simulated camera uv measurements if we have them
     double time_cam;
     std::vector<int> camids;
@@ -167,9 +154,7 @@ int main(int argc, char **argv) {
     if (hascam) {
       if (buffer_timecam != -1) {
         sys->feed_measurement_simulation(buffer_timecam, buffer_camids, buffer_feats);
-#if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
         viz->visualize();
-#endif
       }
       buffer_timecam = time_cam;
       buffer_camids = camids;
@@ -177,15 +162,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  // Final visualization
-#if ROS_AVAILABLE == 1
   viz->visualize_final();
   ros::shutdown();
-#elif ROS_AVAILABLE == 2
-  viz->visualize_final();
-  rclcpp::shutdown();
-#endif
-
-  // Done!
   return EXIT_SUCCESS;
 }

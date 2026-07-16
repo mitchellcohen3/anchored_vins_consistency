@@ -115,6 +115,13 @@ struct InertialInitializerOptions {
   /// Initial IMU accelerometer bias values for dynamic initialization (will be optimized)
   Eigen::Vector3d init_dyn_bias_a = Eigen::Vector3d::Zero();
 
+  /// Initial covariances for our IMU state
+  double sigma_prior_q = 0.1; // [rad]
+  double sigma_prior_p = 0.05; // [m]
+  double sigma_prior_v = 0.01; // [m/s]
+  double sigma_prior_bg = 0.02; // [rad/s]
+  double sigma_prior_ba = 0.1; // [m/s^2]
+
   /**
    * @brief This function will load print out all initializer settings loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -140,6 +147,12 @@ struct InertialInitializerOptions {
       parser->parse_config("init_dyn_inflation_bg", init_dyn_inflation_bias_gyro);
       parser->parse_config("init_dyn_inflation_ba", init_dyn_inflation_bias_accel);
       parser->parse_config("init_dyn_min_rec_cond", init_dyn_min_rec_cond);
+      parser->parse_config("init_prior_q", sigma_prior_q);
+      parser->parse_config("init_prior_p", sigma_prior_p);
+      parser->parse_config("init_prior_v", sigma_prior_v);
+      parser->parse_config("init_prior_bg", sigma_prior_bg); 
+      parser->parse_config("init_prior_ba", sigma_prior_ba);
+
       std::vector<double> bias_g = {0, 0, 0};
       std::vector<double> bias_a = {0, 0, 0};
       parser->parse_config("init_dyn_bias_g", bias_g);
@@ -187,6 +200,12 @@ struct InertialInitializerOptions {
     }
     PRINT_DEBUG("  - init_dyn_bias_g: %.2f, %.2f, %.2f\n", init_dyn_bias_g(0), init_dyn_bias_g(1), init_dyn_bias_g(2));
     PRINT_DEBUG("  - init_dyn_bias_a: %.2f, %.2f, %.2f\n", init_dyn_bias_a(0), init_dyn_bias_a(1), init_dyn_bias_a(2));
+
+    PRINT_DEBUG("  - init_prior_q: %.2e\n", sigma_prior_q);
+    PRINT_DEBUG("  - init_prior_p: %.2e\n", sigma_prior_p);
+    PRINT_DEBUG("  - init_prior_v: %.2e\n", sigma_prior_v);
+    PRINT_DEBUG("  - init_prior_bg: %.2e\n", sigma_prior_bg);
+    PRINT_DEBUG("  - init_prior_ba: %.2e\n", sigma_prior_ba);
   }
 
   // NOISE / CHI2 ============================

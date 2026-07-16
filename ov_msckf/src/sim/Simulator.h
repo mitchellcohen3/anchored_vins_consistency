@@ -117,6 +117,19 @@ public:
   /// Access function to get the true parameters (i.e. calibration and settings)
   VioManagerOptions get_true_parameters() { return params; }
 
+  /**
+   * @brief Perturbs the initial state based on the simulation settings
+   * @param init_state Initial state to perturb
+   * @return Perturbed initial state
+   */
+  Eigen::Matrix<double, 17, 1> perturb_initial_state(const Eigen::Matrix<double, 17, 1> &init_state);
+
+  /**
+   * @brief Gets the initial covariance we should use for the filter
+   * @return Initial covariance matrix for the filter
+   */
+  Eigen::Matrix<double, 15, 15> get_initial_covariance(const Eigen::Matrix<double, 17, 1> &init_state);
+
 protected:
   /**
    * @brief Projects the passed map features into the desired camera frame.
@@ -139,6 +152,11 @@ protected:
    */
   void generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::Vector3d &p_IinG, int camid,
                        std::unordered_map<size_t, Eigen::Vector3d> &feats, int numpts);
+
+  /**
+   * @brief Generates points in a square around the origin
+   */
+  void generate_points_square();
 
   //===================================================================
   // Configuration variables
@@ -172,6 +190,9 @@ protected:
 
   /// Mersenne twister PRNG for state perturbations
   std::mt19937 gen_state_perturb;
+
+  // Mersenne twister PRNG for IMU perturbations
+  std::mt19937 gen_state_imu_perturb;
 
   /// If our simulation is running
   bool is_running;

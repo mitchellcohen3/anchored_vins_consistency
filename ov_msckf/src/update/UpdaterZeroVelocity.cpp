@@ -166,7 +166,12 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
     }
 
     // Measurement Jacobian
-    Eigen::Matrix3d R_GtoI_jacob = (state->_options.do_fej) ? state->_imu->Rot_fej() : state->_imu->Rot();
+    Eigen::Matrix3d R_GtoI_jacob = state->_imu->Rot();
+    if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+      // PRINT_DEBUG("Using FEJ for ZUPT Jacobian computation.\n");
+      R_GtoI_jacob = state->_imu->Rot_fej();
+    }
+
     H.block(6 * i + 0, 3, 3, 3) = -w_omega * Eigen::Matrix3d::Identity();
     if (!integrated_accel_constraint) {
       H.block(6 * i + 3, 0, 3, 3) = -w_accel * skew_x(R_GtoI_jacob * _gravity);
@@ -303,7 +308,9 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
     Hx_order.push_back(state->_clones_IMU.at(time0_cam));
     Hx_order.push_back(state->_clones_IMU.at(time1_cam));
     Hx_order.push_back(state->_imu->v());
-    if (state->_options.do_fej) {
+
+    if (state->_options.consistency_method == StateOptions::ConsistencyMethod::FEJ) {
+      // PRINT_DEBUG("Using FEJ for ZUPT Jacobian computation.\n");
       R_GtoI0 = state->_clones_IMU.at(time0_cam)->Rot_fej();
     }
     H.block(0, 0, 3, 3) = Eigen::Matrix3d::Identity();

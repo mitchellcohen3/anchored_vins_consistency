@@ -31,18 +31,17 @@
 #include "utils/print.h"
 #include "utils/sensor_data.h"
 
+#include "types/Type.h"
+
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
 ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_ptr<VioManager> app, std::shared_ptr<Simulator> sim)
-    : _nh(nh), _app(app), _sim(sim), thread_update_running(false) {
+    : _nh(nh), _app(app), _sim(sim), thread_update_running(false), _it(*nh) {
 
   // Setup our transform broadcaster
   mTfBr = std::make_shared<tf::TransformBroadcaster>();
-
-  // Create image transport
-  image_transport::ImageTransport it(*_nh);
 
   // Setup pose and path publisher
   pub_poseimu = nh->advertise<geometry_msgs::PoseWithCovarianceStamped>("poseimu", 2);
@@ -63,7 +62,7 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   PRINT_DEBUG("Publishing: %s\n", pub_points_sim.getTopic().c_str());
 
   // Our tracking image
-  it_pub_tracks = it.advertise("trackhist", 2);
+  it_pub_tracks = _it.advertise("trackhist", 2);
   PRINT_DEBUG("Publishing: %s\n", it_pub_tracks.getTopic().c_str());
 
   // Groundtruth publishers
@@ -77,8 +76,8 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   pub_loop_point = nh->advertise<sensor_msgs::PointCloud>("loop_feats", 2);
   pub_loop_extrinsic = nh->advertise<nav_msgs::Odometry>("loop_extrinsic", 2);
   pub_loop_intrinsics = nh->advertise<sensor_msgs::CameraInfo>("loop_intrinsics", 2);
-  it_pub_loop_img_depth = it.advertise("loop_depth", 2);
-  it_pub_loop_img_depth_color = it.advertise("loop_depth_colored", 2);
+  it_pub_loop_img_depth = _it.advertise("loop_depth", 2);
+  it_pub_loop_img_depth_color = _it.advertise("loop_depth_colored", 2);
 
   // option to enable publishing of global to IMU transformation
   nh->param<bool>("publish_global_to_imu_tf", publish_global2imu_tf, true);
@@ -99,6 +98,7 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   // If so, then open the file and create folders as needed
   nh->param<bool>("save_total_state", save_total_state, false);
   if (save_total_state) {
+    PRINT_DEBUG("Saving total state!\n");
 
     // files we will open
     std::string filepath_est, filepath_std, filepath_gt;
@@ -106,12 +106,17 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
     nh->param<std::string>("filepath_std", filepath_std, "state_deviation.txt");
     nh->param<std::string>("filepath_gt", filepath_gt, "state_groundtruth.txt");
 
+    PRINT_DEBUG("filepath_est %s\n", filepath_est.c_str());
+    PRINT_DEBUG("filepath_std %s\n", filepath_std.c_str());
+    PRINT_DEBUG("filepath_gt %s\n", filepath_gt.c_str());
+
     // If it exists, then delete it
     if (boost::filesystem::exists(filepath_est))
       boost::filesystem::remove(filepath_est);
     if (boost::filesystem::exists(filepath_std))
       boost::filesystem::remove(filepath_std);
 
+    
     // Create folder path to this location if not exists
     boost::filesystem::create_directories(boost::filesystem::path(filepath_est.c_str()).parent_path());
     boost::filesystem::create_directories(boost::filesystem::path(filepath_std.c_str()).parent_path());
@@ -134,6 +139,42 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
                   << std::endl;
     }
   }
+
+  // Create a file for the estimated poses
+  std::string pose_est_path;
+  nh->param<std::string>("path_est", pose_est_path, "");
+  PRINT_WARNING("Poses est path: %s\n", pose_est_path.c_str());
+  if (boost::filesystem::exists(pose_est_path)) { 
+    PRINT_WARNING(YELLOW "Pose estimate file already exists, deleting and creating new one!\n" RESET);
+    boost::filesystem::remove(pose_est_path);
+  }
+  // Check if the directory exists, if not create it
+  if (!boost::filesystem::exists(boost::filesystem::path(pose_est_path.c_str()).parent_path())) {
+    PRINT_WARNING(YELLOW "Pose estimate directory does not exist, creating it!\n" RESET);
+    boost::filesystem::create_directories(boost::filesystem::path(pose_est_path.c_str()).parent_path());
+  }
+  of_pose_est.open(pose_est_path.c_str());
+  of_pose_est << "# timestamp(s) tx ty tz qx qy qz qw Pr11 Pr12 Pr13 Pr22 Pr23 Pr33 Pt11 Pt12 Pt13 Pt22 Pt23 Pt33" << std::endl;
+
+  // If we are simulating, also create a file for the groundtruth poses
+  // if (_sim != nullptr) {
+  //   std::string pose_gt_path;
+  //   nh->param<std::string>("path_gt_poses", pose_gt_path, "");
+  //   PRINT_INFO("Poses gt path: %s\n", pose_gt_path.c_str());
+
+  //   // If it exists, then delete it
+  //   if (boost::filesystem::exists(pose_gt_path)) {
+  //     boost::filesystem::remove(pose_gt_path);
+  //   }
+  //   // Check if the directory exists, if not create it
+  //   if (!boost::filesystem::exists(boost::filesystem::path(pose_gt_path.c_str()).parent_path())) {
+  //     boost::filesystem::create_directories(boost::filesystem::path(pose_gt_path.c_str()).parent_path());
+  //   }
+
+  //   // Open the file
+  //   of_pose_gt.open(pose_gt_path.c_str());
+  //   of_pose_gt << "# timestamp(s) tx ty tz qx qy qz qw" << std::endl;
+  // }
 
   // Start thread for the image publishing
   if (_app->get_params().use_multi_threading_pubs) {
@@ -236,10 +277,71 @@ void ROS1Visualizer::visualize() {
     ROSVisualizerHelper::sim_save_total_state_to_file(_app->get_state(), _sim, of_state_est, of_state_std, of_state_gt);
   }
 
+  write_estimated_pose();
+  
+  // Also write the groundtruth poses if we are simulatingA
+  // if (_sim != nullptr) {
+  //   write_groundtruth_pose();
+  // }
+
   // Print how much time it took to publish / displaying things
   // rT0_2 = boost::posix_time::microsec_clock::local_time();
   // double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
   // PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for visualization\n" RESET, time_total);
+}
+
+void ROS1Visualizer::write_groundtruth_pose() {
+  // Save the groundtruth pose to a file
+  // We want to write timestamp in the last camera frame
+  double t_ItoC = _app->get_state()->_calib_dt_CAMtoIMU->value()(0);
+  double timestamp_inI = _app->get_state()->_timestamp + t_ItoC;
+
+  // Get the groundtruth state at this time
+  Eigen::Matrix<double, 17, 1> state_gt;
+  if (!_sim->get_state(timestamp_inI, state_gt))
+    return;
+
+  of_pose_gt.precision(5);
+  of_pose_gt.setf(std::ios::fixed, std::ios::floatfield);
+  of_pose_gt << timestamp_inI << " ";
+
+  // Pose
+  of_pose_gt.precision(6);
+  of_pose_gt << state_gt(5) << " " << state_gt(6) << " " << state_gt(7) << " " << state_gt(1) << " " << state_gt(2) << " "
+             << state_gt(3) << " " << state_gt(4) << std::endl;
+}
+
+void ROS1Visualizer::write_estimated_pose() {
+  // Save the estimated pose to a file
+  // Get the covariance of the pose
+  std::vector<std::shared_ptr<Type>> pose_vars;
+  pose_vars.push_back(_app->get_state()->_imu->pose());
+  Eigen::MatrixXd pose_cov = StateHelper::get_marginal_covariance(_app->get_state(), pose_vars);
+
+  Eigen::Matrix3d cov_rot = pose_cov.block<3, 3>(0, 0);
+  Eigen::Matrix3d cov_pos = pose_cov.block<3, 3>(3, 3);
+
+  // Write to a file
+  // We want to write timestamp in the last camera frame
+  double t_ItoC = _app->get_state()->_calib_dt_CAMtoIMU->value()(0);
+  double timestamp_inI = _app->get_state()->_timestamp + t_ItoC;
+
+  of_pose_est.precision(5);
+  of_pose_est.setf(std::ios::fixed, std::ios::floatfield);
+  of_pose_est << timestamp_inI << " ";
+
+  std::shared_ptr<State> state = _app->get_state();
+
+  // Pose
+  of_pose_est.precision(6);
+  of_pose_est << state->_imu->pos().x() << " " << state->_imu->pos().y() << " " << state->_imu->pos().z() << " " << state->_imu->quat()(0) << " "
+              << state->_imu->quat()(1) << " " << state->_imu->quat()(2) << " " << state->_imu->quat()(3) << " ";
+
+  // Covariance (only upper triangular)
+  of_pose_est.precision(10);
+  of_pose_est << cov_rot(0, 0) << " " << cov_rot(0, 1) << " " << cov_rot(0, 2) << " " << cov_rot(1, 1) << " " << cov_rot(1, 2) << " "
+          << cov_rot(2, 2) << " " << cov_pos(0, 0) << " " << cov_pos(0, 1) << " " << cov_pos(0, 2) << " " << cov_pos(1, 1) << " "
+          << cov_pos(1, 2) << " " << cov_pos(2, 2) << std::endl;
 }
 
 void ROS1Visualizer::visualize_odometry(double timestamp) {

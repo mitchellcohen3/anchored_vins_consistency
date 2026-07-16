@@ -169,7 +169,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
       feat.anchor_cam_id = (*it2)->anchor_cam_id;
       feat.anchor_clone_timestamp = (*it2)->anchor_clone_timestamp;
       feat.p_FinA = (*it2)->p_FinA;
-      feat.p_FinA_fej = (*it2)->p_FinA;
+      // feat.p_FinA_fej = (*it2)->p_FinA;
     } else {
       feat.p_FinG = (*it2)->p_FinG;
       feat.p_FinG_fej = (*it2)->p_FinG;
@@ -216,7 +216,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
       landmark->_anchor_cam_id = feat.anchor_cam_id;
       landmark->_anchor_clone_timestamp = feat.anchor_clone_timestamp;
       landmark->set_from_xyz(feat.p_FinA, false);
-      landmark->set_from_xyz(feat.p_FinA_fej, true);
+      // landmark->set_from_xyz(feat.p_FinA_fej, true);
     } else {
       landmark->set_from_xyz(feat.p_FinG, false);
       landmark->set_from_xyz(feat.p_FinG_fej, true);
@@ -346,7 +346,9 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
       feat.anchor_cam_id = landmark->_anchor_cam_id;
       feat.anchor_clone_timestamp = landmark->_anchor_clone_timestamp;
       feat.p_FinA = landmark->get_xyz(false);
-      feat.p_FinA_fej = landmark->get_xyz(true);
+
+      // Commented out from original code since this value is unused in later code
+      // feat.p_FinA_fej = landmark->get_xyz(true);
     } else {
       feat.p_FinG = landmark->get_xyz(false);
       feat.p_FinG_fej = landmark->get_xyz(true);
@@ -467,6 +469,9 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
   R_big.conservativeResize(ct_meas, ct_meas);
 
   // 5. With all good SLAM features update the state
+  // compute norm of large residual
+  // double res_norm = res_big.norm();
+  // PRINT_DEBUG("[SLAM-UP]: total residual norm before update: %.6f\n", res_norm);
   StateHelper::EKFUpdate(state, Hx_order_big, Hx_big, res_big, R_big);
   rT3 = boost::posix_time::microsec_clock::local_time();
 
@@ -489,6 +494,10 @@ void UpdaterSLAM::change_anchors(std::shared_ptr<State> state) {
   // NOTE: for now we have anchor the feature in the same camera as it is before
   // NOTE: this also does not change the representation of the feature at all right now
   double marg_timestep = state->margtimestep();
+  // PRINT_DEBUG(BLUE"Marginalization time: %.3f\n" RESET, marg_timestep);
+  // PRINT_DEBUG(BLUE "Current time: %.3f\n" RESET, state->_timestamp);
+
+  int num_changed = 0;
   for (auto &f : state->_features_SLAM) {
     // Skip any features that are in the global frame
     if (f.second->_feat_representation == LandmarkRepresentation::Representation::GLOBAL_3D ||
@@ -498,16 +507,20 @@ void UpdaterSLAM::change_anchors(std::shared_ptr<State> state) {
     assert(marg_timestep <= f.second->_anchor_clone_timestamp);
     if (f.second->_anchor_clone_timestamp == marg_timestep) {
       perform_anchor_change(state, f.second, state->_timestamp, f.second->_anchor_cam_id);
+      num_changed++;
     }
   }
+  // PRINT_DEBUG(RED "[SLAM-UP]: changed %d feature anchors from time %.3f to time %.3f\n" RESET, num_changed, marg_timestep, state->_timestamp);
 }
 
 void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::shared_ptr<Landmark> landmark, double new_anchor_timestamp,
                                         size_t new_cam_id) {
-
   // Assert that this is an anchored representation
   assert(LandmarkRepresentation::is_relative_representation(landmark->_feat_representation));
   assert(landmark->_anchor_cam_id != -1);
+  
+  /// Want to change from anchor frame f_1 to f_2
+  // r_pf2_f2 = C_f2f1 * r_pf2_f1 + p_f1f2_f2
 
   // Create current feature representation
   UpdaterHelper::UpdaterHelperFeature old_feat;
@@ -516,7 +529,7 @@ void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::share
   old_feat.anchor_cam_id = landmark->_anchor_cam_id;
   old_feat.anchor_clone_timestamp = landmark->_anchor_clone_timestamp;
   old_feat.p_FinA = landmark->get_xyz(false);
-  old_feat.p_FinA_fej = landmark->get_xyz(true);
+  // old_feat.p_FinA_fej = landmark->get_xyz(true);
 
   // Get Jacobians of p_FinG wrt old representation
   Eigen::MatrixXd H_f_old;
@@ -535,18 +548,25 @@ void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::share
   //==========================================================================
 
   // OLD: anchor camera position and orientation
+  // R_GtoIOLD - C_b1_a
+  // R_GtoOLD - C_f1_a
+  // p_OLDinG - r_c1w_a
   Eigen::Matrix<double, 3, 3> R_GtoIOLD = state->_clones_IMU.at(old_feat.anchor_clone_timestamp)->Rot();
   Eigen::Matrix<double, 3, 3> R_GtoOLD = state->_calib_IMUtoCAM.at(old_feat.anchor_cam_id)->Rot() * R_GtoIOLD;
   Eigen::Matrix<double, 3, 1> p_OLDinG = state->_clones_IMU.at(old_feat.anchor_clone_timestamp)->pos() -
                                          R_GtoOLD.transpose() * state->_calib_IMUtoCAM.at(old_feat.anchor_cam_id)->pos();
 
   // NEW: anchor camera position and orientation
+  // R_GtoINEW - C_b2_a
+  // R_GtoNEW - C_f2_a
+  // p_NEWinG - r_c2w_a
   Eigen::Matrix<double, 3, 3> R_GtoINEW = state->_clones_IMU.at(new_feat.anchor_clone_timestamp)->Rot();
   Eigen::Matrix<double, 3, 3> R_GtoNEW = state->_calib_IMUtoCAM.at(new_feat.anchor_cam_id)->Rot() * R_GtoINEW;
   Eigen::Matrix<double, 3, 1> p_NEWinG = state->_clones_IMU.at(new_feat.anchor_clone_timestamp)->pos() -
                                          R_GtoNEW.transpose() * state->_calib_IMUtoCAM.at(new_feat.anchor_cam_id)->pos();
 
   // Calculate transform between the old anchor and new one
+  // r_pf2_f2 = C_f2f1 * r_pf1_f1 + p_f1f2_f2
   Eigen::Matrix<double, 3, 3> R_OLDtoNEW = R_GtoNEW * R_GtoOLD.transpose();
   Eigen::Matrix<double, 3, 1> p_OLDinNEW = R_GtoNEW * (p_OLDinG - p_NEWinG);
   new_feat.p_FinA = R_OLDtoNEW * landmark->get_xyz(false) + p_OLDinNEW;
@@ -569,7 +589,7 @@ void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::share
   // Calculate transform between the old anchor and new one
   Eigen::Matrix<double, 3, 3> R_OLDtoNEW_fej = R_GtoNEW_fej * R_GtoOLD_fej.transpose();
   Eigen::Matrix<double, 3, 1> p_OLDinNEW_fej = R_GtoNEW_fej * (p_OLDinG_fej - p_NEWinG_fej);
-  new_feat.p_FinA_fej = R_OLDtoNEW_fej * landmark->get_xyz(true) + p_OLDinNEW_fej;
+  // new_feat.p_FinA_fej = R_OLDtoNEW_fej * landmark->get_xyz(true) + p_OLDinNEW_fej;
 
   // Get Jacobians of p_FinG wrt new representation
   Eigen::MatrixXd H_f_new;
@@ -606,6 +626,12 @@ void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::share
   phi_order_OLD.push_back(landmark);
   current_it += landmark->size();
 
+  // PRINT_DEBUG("Size of Phi_id_map: %d \n", (int)Phi_id_map.size());
+  // for (auto const &pair : Phi_id_map) {
+  //   // PRINT_DEBUG("  Variable of size %d at index %d \n", (int)pair.first->size(), pair.second);
+  //   PRINT_DEBUG("Variable of size %d at index %d \n", (int)pair.first->size(), pair.first->id());
+  // }
+
   // Anchor change Jacobian
   int phisize = (new_feat.feat_representation != LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE) ? 3 : 1;
   Eigen::MatrixXd Phi = Eigen::MatrixXd::Zero(phisize, current_it);
@@ -634,6 +660,11 @@ void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::share
   }
 
   // Perform covariance propagation
+  // PRINT_DEBUG("Performing EKF propagation: \n");
+  // PRINT_DEBUG("Size of phi_order_NEW: %d \n", (int)phi_order_NEW.size());
+  // PRINT_DEBUG("Size of phi_order_OLD: %d \n", (int)phi_order_OLD.size());
+  // PRINT_DEBUG("Size of Phi: %d x %d\n", (int)Phi.rows(), (int)Phi.cols());
+  // PRINT_DEBUG("Size of Q: %d x %d\n", (int)Q.rows(), (int)Q.cols());
   StateHelper::EKFPropagation(state, phi_order_NEW, phi_order_OLD, Phi, Q);
 
   // Set state from new feature
@@ -642,6 +673,5 @@ void UpdaterSLAM::perform_anchor_change(std::shared_ptr<State> state, std::share
   landmark->_anchor_cam_id = new_feat.anchor_cam_id;
   landmark->_anchor_clone_timestamp = new_feat.anchor_clone_timestamp;
   landmark->set_from_xyz(new_feat.p_FinA, false);
-  landmark->set_from_xyz(new_feat.p_FinA_fej, true);
   landmark->has_had_anchor_change = true;
 }
